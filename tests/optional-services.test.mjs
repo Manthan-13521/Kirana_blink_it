@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { createHmac,generateKeyPairSync,verify } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
+import { DatabaseSync } from 'node:sqlite'
 import { registerHooks } from 'node:module'
 import { test } from 'node:test'
 
@@ -65,4 +66,23 @@ test('Media validation rejects an oversized decoded image and accepts bounded fi
   const changed=bytes.slice(0)
   new DataView(changed).setUint16(26,16000,true)
   assert.equal(validMedia(changed,'image/webp'),false)
+})
+
+test('optional-service quota refuses excess work and recovers on the next UTC day',async()=>{
+  const {reserve}=await import('../worker/budget.ts')
+  const sqlite=new DatabaseSync(':memory:')
+  try{
+    sqlite.exec(`CREATE TABLE service_budget(service TEXT PRIMARY KEY,day INTEGER NOT NULL,used INTEGER NOT NULL,last_at INTEGER NOT NULL);
+      CREATE TABLE orders(id TEXT PRIMARY KEY,total INTEGER NOT NULL);
+      INSERT INTO orders VALUES('committed-order',4200)`)
+    const db={prepare:sql=>({bind:(...params)=>({first:async()=>sqlite.prepare(sql).get(...params)??null})})}
+    assert.equal(await reserve(db,'routing',9,10),true)
+    assert.equal(await reserve(db,'routing',2,10),false)
+    assert.equal(await reserve(db,'routing',1,10),true)
+    assert.equal(sqlite.prepare("SELECT used FROM service_budget WHERE service='routing'").get().used,10)
+    sqlite.exec("UPDATE service_budget SET day=day-1 WHERE service='routing'")
+    assert.equal(await reserve(db,'routing',9,10),true)
+    assert.equal(sqlite.prepare("SELECT used FROM service_budget WHERE service='routing'").get().used,9)
+    assert.equal(sqlite.prepare('SELECT total FROM orders').get().total,4200)
+  }finally{sqlite.close()}
 })

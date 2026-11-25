@@ -8,9 +8,10 @@ const [storePath, option] = process.argv.slice(2)
 assert.ok(storePath && (option === undefined || option === '--dry-run'),
   'Usage: npm run deploy:staging -- STORE_JSON [--dry-run]')
 const source = resolve(storePath)
-const {slug,frontendProject} = JSON.parse(readFileSync(source,'utf8'))
-assert.ok(slug?.endsWith('-staging') && frontendProject?.endsWith('-staging'),
-  'This command only deploys dedicated resources whose store and Pages names end in -staging.')
+const {slug,frontendProject,googleOrigin} = JSON.parse(readFileSync(source,'utf8'))
+assert.ok(slug?.endsWith('-staging'),'The Worker and databases must use a dedicated staging slug.')
+assert.ok(frontendProject?.endsWith('-staging')||googleOrigin==='https://'+frontendProject+'.pages.dev',
+  'For a short Pages project name, set googleOrigin to its exact HTTPS Pages hostname.')
 const dryRun = option === '--dry-run'
 const wrangler = resolve('node_modules','wrangler','bin','wrangler.js')
 const root = mkdtempSync(join(tmpdir(),'kirana-staging-'))

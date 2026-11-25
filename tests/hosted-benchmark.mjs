@@ -23,7 +23,7 @@ if(target){
 }
 
 let writes=0,reads=0,statements=0,requests=0,errors=0
-const times=[]
+const times=[],byEndpoint=new Map()
 function client(){
   let cookie=''
   return async(path,{method='GET',data,type,expected=200}={})=>{
@@ -42,7 +42,12 @@ function client(){
     }
     requests++
     const value=response.headers.get('content-type')?.includes('application/json')?await response.json():new Uint8Array(await response.arrayBuffer())
-    times.push(performance.now()-start)
+    const elapsed=performance.now()-start
+    times.push(elapsed)
+    const endpoint=method+' '+path.split('?')[0].replace(/(\/orders\/)[a-f0-9-]{36}/,'$1:id')
+    const results=byEndpoint.get(endpoint)??[]
+    results.push(elapsed)
+    byEndpoint.set(endpoint,results)
     if(response.status!==expected)errors++
     assert.equal(response.status,expected,`${method} ${path} ${JSON.stringify(value).slice(0,200)}`)
     if(path.startsWith('/api/'))assert.ok(metric,'Every synthetic API response must include D1 counters.')
@@ -102,7 +107,12 @@ assert.equal(after.online_orders-before.online_orders,counts.online)
 assert.equal(after.walk_in-before.walk_in,counts.pos)
 assert.equal(after.completed-before.completed,counts.online+counts.pos)
 const elapsed=performance.now()-start
-times.sort((a,b)=>a-b)
-const p=q=>Math.round(times[Math.ceil(q*times.length)-1])
-console.log(JSON.stringify({...counts,catalog,requests,errors,p50_ms:p(.5),p95_ms:p(.95),p99_ms:p(.99),elapsed_ms:Math.round(elapsed),
-  d1:{reads,writes,statements}}))
+const percentiles=samples=>{
+  samples.sort((a,b)=>a-b)
+  const p=q=>Math.round(samples[Math.ceil(q*samples.length)-1])
+  return {p50_ms:p(.5),p95_ms:p(.95),p99_ms:p(.99)}
+}
+const endpoints=Object.fromEntries([...byEndpoint].map(([endpoint,samples])=>
+  [endpoint,{requests:samples.length,...percentiles(samples)}]))
+console.log(JSON.stringify({...counts,catalog,requests,errors,...percentiles(times),elapsed_ms:Math.round(elapsed),
+  endpoints,d1:{reads,writes,statements}}))
