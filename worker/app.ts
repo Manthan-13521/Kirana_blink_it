@@ -22,7 +22,7 @@ export function application(localRoutes?:Hono<Env>) {
   app.use('*',async(c,next)=>{
     await next()
     c.header('X-Content-Type-Options','nosniff')
-    c.header('Referrer-Policy','strict-origin-when-cross-origin')
+    c.header('Referrer-Policy',c.req.path.startsWith('/api/auth/google')?'no-referrer':'strict-origin-when-cross-origin')
     c.header('X-Frame-Options','DENY')
   })
   api.use('*',bodyLimit({maxSize:96*1024,onError:c=>c.json({error:'Request is too large.'},413)}))

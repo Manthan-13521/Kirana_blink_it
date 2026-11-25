@@ -8,7 +8,6 @@ const oauthCookie='__Host-kirana_google'
 const workspacePath={shop:'/',owner:'/owner',rider:'/rider'} as const
 type Workspace=keyof typeof workspacePath
 export const googleAuth=new Hono<Env>()
-googleAuth.use('/auth/google/*',async(c,next)=>{c.header('Referrer-Policy','no-referrer');await next()})
 
 function configuration(c:Ctx){
   const {GOOGLE_CLIENT_ID,GOOGLE_CLIENT_SECRET,GOOGLE_ORIGIN}=c.env
@@ -36,7 +35,7 @@ googleAuth.get('/auth/google/callback',async c=>{
   const config=configuration(c)
   if(!config)throw new Problem(503,'Google sign-in is unavailable.')
   const state=c.req.query('state'), code=c.req.query('code'),binding=getCookie(c,oauthCookie)
-  if(!state||!binding||!code||!/^\w{64}$/.test(state)||!/^\w{64}$/.test(binding)||code.length>2048){
+  if(!state||!binding||!code||!/^[a-f0-9]{64}$/.test(state)||!/^[a-f0-9]{64}$/.test(binding)||code.length>2048){
     throw new Problem(400,'Start Google sign-in again.')
   }
   const db=c.env.DB
