@@ -1,4 +1,4 @@
-import { lazy,Suspense,useEffect,useRef,useState } from 'react'
+import { useCallback,lazy,Suspense,useEffect,useRef,useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { ArrowRight,Bell,ChevronDown,CircleUser,MapPin,Search,ShoppingBasket,Store,Truck,X } from 'lucide-react'
 import { AddressForm,OrderList,OrderView } from './checkout'
@@ -31,7 +31,7 @@ function App(){
   const cartChanged=useRef(false)
   const cartCount=cart.reduce((count,line)=>count+line.steps,0)
   const cartValue=cart.reduce((total,line)=>total+line.steps*line.product.price,0)
-  const refreshShop=async()=>{const result=await api<{settings:Shop;local:boolean}>('/store',{cache:'reload'});setShop(result.settings);setLocal(result.local)}
+  const refreshShop=useCallback(async()=>{const result=await api<{settings:Shop;local:boolean}>('/store',{cache:'reload'});setShop(result.settings);setLocal(result.local)},[])
   useEffect(()=>{
     Promise.all([refreshShop(),api<{account:Account|null}>('/me')]).then(async([,me])=>{
       const key=cartKey(me.account?.role==='customer'?me.account.id:undefined)
@@ -124,7 +124,7 @@ function App(){
   const allowed=view==='shop'||(view==='owner'&&['owner','staff'].includes(account?.role??''))||(view==='rider'&&account?.role==='rider')
   if(!shop)return <div className="shell startup"><Mark/><ErrorText text={error}/>{!error&&<p>Opening the store…</p>}</div>
   return <div style={{'--brand':shop.brand_color} as React.CSSProperties}>
-    <div className="topbar"><div className="shell top-inner"><span><Store size={13}/> {local?'Local demo store':shop.accepting?'Your neighbourhood grocery':'Store preview · Online orders closed'}</span>
+    <div className="topbar"><div className="shell top-inner"><span><Store size={13}/> {!shop.accepting?'Online ordering is temporarily unavailable':local?'Local demo store':'Your neighbourhood grocery'}</span>
     </div></div>
     <header className="main-header"><div className="shell header-inner">
       <button className="brand-button" onClick={()=>go('shop')} aria-label={shop.name+' storefront'}><Mark name={shop.name}/></button>
@@ -139,7 +139,7 @@ function App(){
       </div>
     </div></header>
     <ErrorText text={error}/>
-    {view==='shop'?<Storefront shop={shop} account={account} query={query} setQuery={setQuery} cart={cart} setCart={changeCart} cartOpen={cartOpen} startCheckout={resumeCheckout} openCart={open=>{setResumeCheckout(false);openCart(open)}}
+    {view==='shop'?<Storefront shop={shop} refreshShop={refreshShop} account={account} query={query} setQuery={setQuery} cart={cart} setCart={changeCart} cartOpen={cartOpen} startCheckout={resumeCheckout} openCart={open=>{setResumeCheckout(false);openCart(open)}}
       requireLogin={()=>{checkoutIntent.current=true;openCart(false);signIn('customer')}} openOrder={setOrder} setLocation={()=>setModal('location')}/>
       :!allowed||!account?<main className="shell role-entry">
         <div className="console-hero"><div><small>{view==='owner'?'STORE WORKSPACE':'DELIVERY WORKSPACE'}</small><h1>{view==='owner'?'Manage your Kirana':'Deliver for your Kirana'}</h1><p>{view==='owner'?'Catalog, orders, counter sales and store settings.':'Assigned orders, route stops and cash collections.'}</p></div><button className="button light" onClick={()=>signIn(currentRole)}>Sign in as {view==='owner'?'owner':'rider'} <ArrowRight size={17}/></button></div>
@@ -199,7 +199,9 @@ function Location({shop,account,onClose,signIn}:{shop:Shop;account:Account|null;
   useEffect(()=>{if(account?.role==='customer')api<Address[]>('/addresses').then(setAddresses,e=>setError(message(e)))},[account?.id,account?.role])
   return <Sheet title="Delivery & store pickup" onClose={onClose}><div className="stack">
     <div className="info-box"><Store size={20}/><span><b>{shop.name}</b><small>{shop.address} · {shop.locality}</small></span></div>
-    <div className="info-box"><Truck size={20}/><span><b>Home delivery within {shop.radius_km} km</b><small>Delivery and collection windows are selected at checkout.</small></span></div>
+    {!shop.accepting&&<p role="status">Online ordering is temporarily unavailable.</p>}
+    {!!(shop.accepting&&shop.enable_delivery)&&<div className="info-box"><Truck size={20}/><span><b>Home delivery within {shop.radius_km} km</b><small>Choose a delivery window at checkout.</small></span></div>}
+    {!!(shop.accepting&&shop.enable_pickup)&&<div className="info-box"><Store size={20}/><span><b>Store pickup</b><small>Choose a pickup window at checkout.</small></span></div>}
     <ErrorText text={error}/>
     {account?.role==='customer'?<>
       <div className="summary-line"><b>Saved addresses</b><button className="text-arrow" onClick={()=>setAdding(!adding)}>{adding?'Close form':'Add address'}</button></div>

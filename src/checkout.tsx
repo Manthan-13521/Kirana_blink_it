@@ -36,15 +36,21 @@ export function AddressForm({shop,account,saved}:{shop:Shop;account:Account; sav
   </form>
 }
 
-type CartProps={shop:Shop;account:Account|null;startAtCheckout?:boolean;cart:CartLine[];change:(p:Product,n:number)=>void;onClose:()=>void;requireLogin:()=>void;complete:(id:string)=>void}
-export function Cart({shop,account,cart,change,onClose,requireLogin,complete,startAtCheckout=false}:CartProps){
+type CartProps={shop:Shop;refreshShop:()=>Promise<void>;account:Account|null;startAtCheckout?:boolean;cart:CartLine[];change:(p:Product,n:number)=>void;onClose:()=>void;requireLogin:()=>void;complete:(id:string)=>void}
+export function Cart({shop,refreshShop,account,cart,change,onClose,requireLogin,complete,startAtCheckout=false}:CartProps){
   const [stage,setStage]=useState<'basket'|'details'>(startAtCheckout?'details':'basket')
-  const [mode,setMode]=useState<'pickup'|'delivery'>('delivery')
+  const [selection,setMode]=useState<'pickup'|'delivery'>(shop.enable_delivery?'delivery':'pickup')
+  const delivery=Boolean(shop.enable_delivery),pickup=Boolean(shop.enable_pickup)
+  const mode=(selection==='delivery'&&delivery)||!pickup?'delivery':'pickup'
+  useEffect(()=>{if((delivery||pickup)&&selection!==mode)setMode(mode)},[delivery,pickup,selection,mode])
+  const [availability,setAvailability]=useState<'checking'|'ready'|'error'>('checking')
+  const canOrder=availability==='ready'&&Boolean(shop.accepting&&(delivery||pickup))
   const [method,setMethod]=useState<'cash'|'online'>(shop.enable_cod?'cash':'online')
   const [addresses,setAddresses]=useState<Address[]>([])
   const [addressId,setAddress]=useState('')
   const [adding,setAdding]=useState(false)
   const [slots,setSlots]=useState<Slot[]>([])
+  const [slotMode,setSlotMode]=useState<typeof mode|null>(null)
   const [slot,setSlot]=useState(0)
   const [note,setNote]=useState('')
   const [quote,setQuote]=useState<Quote|null>(null)
@@ -54,28 +60,43 @@ export function Cart({shop,account,cart,change,onClose,requireLogin,complete,sta
   const [slotRevision,setSlotRevision]=useState(0)
   const [draftKey,setDraftKey]=useState('')
   const [reviewedPayload,setReviewedPayload]=useState('')
+  const [reviewedRevision,setReviewedRevision]=useState<number|null>(null)
   const subtotal=cart.reduce((s,l)=>s+l.steps*l.product.price,0)
   const payload=useMemo(()=>({
     fulfillment:mode,method,...(mode==='delivery'?{addressId}:{}),slot,note,items:cart.map(l=>({id:l.product.id,steps:l.steps})).sort((a,b)=>a.id.localeCompare(b.id)),
   }),[mode,method,addressId,slot,note,cart])
   const serialized=JSON.stringify(payload)
-  const title=stage==='basket'?'Your basket':'Checkout'
+  const title=stage==='basket'||!canOrder?'Your basket':'Checkout'
   useEffect(()=>{
-    if(stage!=='details'||account?.role!=='customer')return
+    let active=true
+    refreshShop().then(()=>{if(active)setAvailability('ready')},()=>{if(active)setAvailability('error')})
+    return ()=>{active=false}
+  },[refreshShop])
+  async function retryAvailability(){
+    setError('')
+    setAvailability('checking')
+    try{await refreshShop();setAvailability('ready')}catch{setAvailability('error')}
+  }
+  useEffect(()=>{
+    if(stage!=='details'||!canOrder||mode!=='delivery'||account?.role!=='customer')return
     let active=true
     api<Address[]>('/addresses').then(a=>{if(active){setAddresses(a);setAddress(v=>v||a[0]?.id||'')}},e=>{if(active)setError(message(e))})
     return ()=>{active=false}
-  },[stage,account?.id,account?.role])
+  },[stage,canOrder,mode,account?.id,account?.role])
   useEffect(()=>{
-    if(stage!=='details')return
+    if(stage!=='details'||!canOrder)return
     const abort=new AbortController()
-    setSlots([]);setSlot(0)
-    api<Slot[]>('/slots?mode='+mode,{signal:abort.signal}).then(r=>{if(!abort.signal.aborted){setSlots(r);setSlot(r[0]?.start||0)}},e=>{if(!abort.signal.aborted)setError(message(e))})
+    setSlots([]);setSlot(0);setSlotMode(null)
+    api<Slot[]>('/slots?mode='+mode,{signal:abort.signal}).then(r=>{
+      if(abort.signal.aborted)return
+      setSlots(r);setSlot(r[0]?.start||0);setSlotMode(mode)
+      if(!r.length)void refreshShop().catch(()=>{})
+    },e=>{if(!abort.signal.aborted)setError(message(e))})
     return ()=>abort.abort()
-  },[stage,mode,slotRevision])
+  },[stage,canOrder,mode,slotRevision,refreshShop])
   useEffect(()=>{
     setQuote(null);setDraftKey('');setReviewedPayload('')
-    if(stage!=='details'||!account||!cart.length||!slot||(mode==='delivery'&&!addressId)){
+    if(stage!=='details'||!canOrder||!account||!cart.length||slotMode!==mode||!slot||(mode==='delivery'&&!addressId)){
       setChecking(false)
       return
     }
@@ -89,15 +110,21 @@ export function Cart({shop,account,cart,change,onClose,requireLogin,complete,sta
         const next=remembered?.quote??await api<Quote>('/quote',{
           method:'POST',headers:{'Content-Type':'application/json'},body:serialized,signal:abort.signal,
         })
-        if(!abort.signal.aborted){setQuote(next);setDraftKey(draft);setReviewedPayload(serialized)}
-      }catch(e){if(!abort.signal.aborted)setError(message(e))}
+        if(!abort.signal.aborted){setQuote(next);setDraftKey(draft);setReviewedPayload(serialized);setReviewedRevision(shop.revision)}
+      }catch(e){
+        if(!abort.signal.aborted){
+          setError(message(e))
+          const code=(e as {code?:string}).code
+          if(code==='fulfillment_unavailable'||code==='store_paused')void refreshShop().catch(()=>{})
+        }
+      }
       finally{if(!abort.signal.aborted)setChecking(false)}
     },260)
     return ()=>{clearTimeout(timer);abort.abort()}
-  },[stage,account?.id,serialized,slotRevision])
+  },[stage,canOrder,account?.id,serialized,slotRevision,slotMode,shop.revision,refreshShop])
   const changed=()=>{setQuote(null);setError('');setReviewedPayload('')}
   async function place(){
-    if(!quote||!draftKey||reviewedPayload!==serialized)return
+    if(!canOrder||!quote||!draftKey||reviewedPayload!==serialized||reviewedRevision!==shop.revision)return
     setError('');setBusy(true)
     const previous=readCheckoutDraft(draftKey)
     const key=previous?.key??crypto.randomUUID()
@@ -111,6 +138,8 @@ export function Cart({shop,account,cart,change,onClose,requireLogin,complete,sta
       if((e as {status?:number}).status===409){
         sessionStorage.removeItem(draftKey)
         setQuote(null);setReviewedPayload('')
+        const code=(e as {code?:string}).code
+        if(code==='fulfillment_unavailable'||code==='store_paused'||code==='quote_changed')void refreshShop().catch(()=>{})
         setSlotRevision(n=>n+1)
       }
     }finally{setBusy(false)}
@@ -118,20 +147,21 @@ export function Cart({shop,account,cart,change,onClose,requireLogin,complete,sta
   return <Sheet title={title} onClose={onClose}>
     <ErrorText text={error}/>
     {!cart.length?<Empty title="Your basket is empty" detail="Add something fresh to get started." action={<button className="button primary" onClick={onClose}>Continue shopping</button>}/>
-    :stage==='basket'?<div className="stack">
+    :stage==='basket'||!canOrder?<div className="stack">
       <div className="cart-list">{cart.map(({product,steps})=><div className="cart-line" key={product.id}>
         <div className="cart-image">{product.image?<img src={product.image} alt=""/>:<ShoppingBasket size={22}/>}</div>
         <div className="cart-product"><b>{product.name}</b><small>{pack(product.unit,product.step)}</small><strong>{rupee(product.price*steps)}</strong></div>
         <div className="quantity"><button aria-label={'Remove '+product.name} onClick={()=>change(product,steps<=product.min_steps?0:steps-1)}><Minus size={14}/></button><b>{steps}</b><button aria-label={'Increase '+product.name} disabled={steps>=Math.min(product.max_steps,Math.floor(product.stock/product.step))} onClick={()=>change(product,steps+1)}><Plus size={14}/></button></div>
       </div>)}</div>
       <div className="summary-line"><b>Subtotal</b><b>{rupee(subtotal)}</b></div>
-      <p className="muted">Choose store pickup or a delivery window at checkout.</p>
-      <button className="button primary full" disabled={!shop.accepting} onClick={()=>{if(account?.role!=='customer'){requireLogin();return}setStage('details')}}>{shop.accepting?'Continue to checkout':'Online orders closed'} <ArrowRight size={16}/></button>
+      {canOrder?<button className="button primary full" onClick={()=>{if(account?.role!=='customer'){requireLogin();return}setStage('details')}}>Continue to checkout <ArrowRight size={16}/></button>
+        :<><p role="status">{availability==='checking'?'Checking online order availability…':availability==='error'?'Could not check online order availability.':'Online ordering is temporarily unavailable. Your basket is saved.'}</p>
+          {availability!=='checking'&&<button type="button" className="button secondary align-start" onClick={()=>void retryAvailability()}>Check availability</button>}</>}
     </div>:<div className="stack">
       <button className="text-arrow align-start" onClick={()=>{changed();setStage('basket')}}><ArrowLeft size={16}/> Back to basket</button>
       <div className="choice-grid">
-        <button className={'option '+(mode==='delivery'?'active':'')} onClick={()=>{changed();setMode('delivery')}}><Truck size={20}/> Home delivery</button>
-        <button className={'option '+(mode==='pickup'?'active':'')} onClick={()=>{changed();setMode('pickup')}}><Store size={20}/> Store pickup</button>
+        {delivery&&<button className={'option '+(mode==='delivery'?'active':'')} aria-pressed={mode==='delivery'} onClick={()=>{if(mode!=='delivery'){changed();setMode('delivery')}}}><Truck size={20}/> Home delivery</button>}
+        {pickup&&<button className={'option '+(mode==='pickup'?'active':'')} aria-pressed={mode==='pickup'} onClick={()=>{if(mode!=='pickup'){changed();setMode('pickup')}}}><Store size={20}/> Store pickup</button>}
       </div>
       {mode==='delivery'?<section className="stack compact">
         <div className="summary-line"><b>Delivery address</b><button className="text-arrow" onClick={()=>setAdding(!adding)}>{adding?'Cancel':'Add new'}</button></div>
@@ -139,7 +169,7 @@ export function Cart({shop,account,cart,change,onClose,requireLogin,complete,sta
         {!!addresses.length&&<select aria-label="Delivery address" value={addressId} onChange={e=>{changed();setAddress(e.target.value)}}>{addresses.map(a=><option key={a.id} value={a.id}>{a.label} · {a.line1}, {a.pin}</option>)}</select>}
         {!addresses.length&&!adding&&<p className="muted">Add a delivery address to see whether the store can reach you.</p>}
       </section>:<div className="info-box"><Store size={18}/><span><b>{shop.name}</b><small>{shop.address}</small></span></div>}
-      <label><span><Clock3 size={16}/> {mode==='delivery'?'Delivery window':'Pickup window'}</span>{slots.length?<select value={slot} onChange={e=>{changed();setSlot(Number(e.target.value))}}>{slots.map(s=><option value={s.start} key={s.start}>{windowLabel(s.start,s.end)}</option>)}</select>:<span className="muted">No available windows. Try {mode==='delivery'?'store pickup':'home delivery'}.</span>}</label>
+      <label><span><Clock3 size={16}/> {mode==='delivery'?'Delivery window':'Pickup window'}</span>{slots.length?<select value={slot} onChange={e=>{changed();setSlot(Number(e.target.value))}}>{slots.map(s=><option value={s.start} key={s.start}>{windowLabel(s.start,s.end)}</option>)}</select>:<span className="muted">{slotMode===null?'Checking available windows…':delivery&&pickup?(mode==='delivery'?'No available windows. Try store pickup.':'No available windows. Try home delivery.'):'No windows are available right now.'}</span>}</label>
       <label>Order note <input placeholder="Optional instructions" value={note} maxLength={280} onChange={e=>{changed();setNote(e.target.value)}}/></label>
       <div><b>Payment</b><div className="choice-grid pad-top">{Boolean(shop.enable_cod)&&<button className={'option '+(method==='cash'?'active':'')} onClick={()=>{changed();setMethod('cash')}}><Wallet size={19}/>{mode==='pickup'?'Cash at pickup':'Cash on delivery'}</button>}
       {Boolean(shop.enable_online)&&<button className={'option '+(method==='online'?'active':'')} onClick={()=>{changed();setMethod('online')}}><CreditCard size={19}/> Online test payment</button>}</div></div>
@@ -149,7 +179,7 @@ export function Cart({shop,account,cart,change,onClose,requireLogin,complete,sta
         {!!quote?.tax&&<div className="summary-line muted"><span>Tax included</span><span>{rupee(quote.tax)}</span></div>}
         {quote&&<div className="summary-line total"><b>Total</b><b>{rupee(quote.total)}</b></div>}
       </div>
-      <button className="button primary full" disabled={busy||checking||!quote||reviewedPayload!==serialized} onClick={place}>{busy?'Placing order…':checking?'Checking total…':'Place order'} <ArrowRight size={16}/></button>
+      <button className="button primary full" disabled={busy||checking||!quote||reviewedPayload!==serialized||reviewedRevision!==shop.revision||slotMode!==mode} onClick={place}>{busy?'Placing order…':checking?'Checking total…':'Place order'} <ArrowRight size={16}/></button>
     </div>}
   </Sheet>
 }

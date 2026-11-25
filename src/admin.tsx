@@ -9,7 +9,7 @@ import { Empty,ErrorText,Heading,Status,Success } from './ui'
 const links=[
   {id:'overview',label:'Overview',icon:LayoutDashboard},{id:'orders',label:'Orders',icon:ClipboardList},{id:'catalog',label:'Catalog & stock',icon:Boxes},
   {id:'counter',label:'Counter sales',icon:ShoppingBag},{id:'reports',label:'Reports',icon:BarChart3},{id:'support',label:'Support & refunds',icon:Wallet},
-  {id:'setup',label:'Store setup',icon:Settings2},{id:'team',label:'Team access',icon:Users},
+  {id:'setup',label:'Store settings',icon:Settings2},{id:'team',label:'Team access',icon:Users},
 ] as const
 type Tab=typeof links[number]['id']
 type Summary={metrics:Record<string,number>;low:{id:string;name:string;stock:number;threshold:number;unit:string;expiry:string|null}[];refunds:number;cases:number}
@@ -227,25 +227,44 @@ function TestPayments(){
 
 function Setup({shop,refresh}:{shop:Shop;refresh:()=>Promise<void>}){
   const [value,setValue]=useState(shop),[step,setStep]=useState(0),[error,setError]=useState(''),[ok,setOk]=useState(''),[busy,setBusy]=useState(false)
-  useEffect(()=>{api<Shop>('/admin/settings').then(setValue,e=>setError(message(e)))},[])
+  const [loaded,setLoaded]=useState(false)
+  useEffect(()=>{api<Shop>('/admin/settings').then(settings=>{setValue(settings);setLoaded(true)},e=>setError(message(e)))},[])
   const change=(key:keyof Shop,v:unknown)=>setValue(old=>({...old,[key]:v}))
   const field=(key:keyof Shop,label:string,pattern?:string)=><label>{label}<input value={String(value[key]??'')} onChange={e=>change(key,e.target.value)} pattern={pattern}/></label>
   const numeric=(key:keyof Shop,label:string,min:number,max:number,precision='1',currency=false)=><label>{label}<input type="number" value={Number(value[key])/(currency?100:1)} min={min} max={max} step={precision} onChange={e=>change(key,currency?Math.round(Number(e.target.value)*100):Number(e.target.value))} required/></label>
   const check=(key:keyof Shop,label:string)=><label className="check-label"><input type="checkbox" checked={Boolean(value[key])} onChange={e=>change(key,Number(e.target.checked))}/>{label}</label>
-  return <section className="stack"><Heading title="Store setup" detail="Set the store identity, service limits and checkout rules."/>
+  return <section className="stack"><Heading title="Store settings" detail="Set the store identity, service limits and checkout rules."/>
     <div className="chips">{['1. Store identity','2. Delivery & pickup','3. Payments & policies'].map((label,i)=><button className={'chip '+(step===i?'active':'')} key={label} onClick={()=>setStep(i)}>{label}</button>)}</div>
     <ErrorText text={error}/><Success text={ok}/>
-    <form className="panel padded stack" onSubmit={async e=>{e.preventDefault();setBusy(true);setError('');setOk('')
+    <form className="panel padded stack" onSubmit={async e=>{e.preventDefault();if(!loaded||busy)return;setBusy(true);setError('');setOk('')
       try{await send('/admin/settings',value,'PUT');await refresh();setOk('Store settings saved.')}catch(e){setError(message(e))}finally{setBusy(false)}
     }}>
       {step===0&&<div className="form-grid">{field('name','Store name')}{field('tagline','Tagline')}{field('locality','Locality')}{field('phone','Store phone')}{field('address','Store address')}<label>Brand colour<input type="color" value={value.brand_color} onChange={e=>change('brand_color',e.target.value)}/></label></div>}
-      {step===1&&<div className="form-grid">{numeric('latitude','Latitude',-90,90,'any')}{numeric('longitude','Longitude',-180,180,'any')}{field('pin_codes','Serviceable PIN codes (comma-separated)')}{numeric('radius_km','Delivery radius (km)',0.1,60,'any')}
-        {numeric('open_hour','Open hour (0–23)',0,23)}{numeric('close_hour','Close hour (1–24)',1,24)}{numeric('preparation','Prep time (minutes)',0,180)}{numeric('window_minutes','Window length (minutes)',15,180)}
-        {numeric('delivery_capacity','Home deliveries per window',1,100)}{numeric('pickup_capacity','Store pickups per window',1,250)}{check('accepting','Accept online orders')}</div>}
+      {step===1&&<>
+        <fieldset className="stack fulfillment-settings">
+          <legend>Online fulfillment</legend>
+          <label className="fulfillment-switch">
+            <span><strong>Enable home delivery</strong><small>Allow customers to order for home delivery.</small></span>
+            <input type="checkbox" role="switch" checked={Boolean(value.enable_delivery)} onChange={e=>change('enable_delivery',Number(e.target.checked))}/>
+          </label>
+          <label className="fulfillment-switch">
+            <span><strong>Enable store pickup</strong><small>Allow customers to collect online orders.</small></span>
+            <input type="checkbox" role="switch" checked={Boolean(value.enable_pickup)} onChange={e=>change('enable_pickup',Number(e.target.checked))}/>
+          </label>
+          {check('accepting','Accept online orders')}
+          <p><strong>After saving</strong> · {!value.accepting||(!value.enable_delivery&&!value.enable_pickup)
+            ?'Online ordering is temporarily unavailable.'
+            :value.enable_delivery&&value.enable_pickup?'Home delivery and store pickup are available.'
+            :value.enable_delivery?'Home delivery is available.':'Store pickup is available.'}</p>
+        </fieldset>
+        <div className="form-grid">{numeric('latitude','Latitude',-90,90,'any')}{numeric('longitude','Longitude',-180,180,'any')}{field('pin_codes','Serviceable PIN codes (comma-separated)')}{numeric('radius_km','Delivery radius (km)',0.1,60,'any')}
+          {numeric('open_hour','Open hour (0–23)',0,23)}{numeric('close_hour','Close hour (1–24)',1,24)}{numeric('preparation','Prep time (minutes)',0,180)}{numeric('window_minutes','Window length (minutes)',15,180)}
+          {numeric('delivery_capacity','Home deliveries per window',1,100)}{numeric('pickup_capacity','Store pickups per window',1,250)}</div>
+      </>}
       {step===2&&<div className="form-grid">{numeric('minimum_order','Minimum order (₹)',0,100000,'.01',true)}{numeric('delivery_fee','Delivery fee (₹)',0,1000,'.01',true)}{numeric('free_delivery','Free delivery threshold (₹)',0,100000,'.01',true)}
         {field('gstin','GSTIN')}{check('registered','GST registered')}{check('enable_cod','Enable cash payments')}{check('enable_online','Enable local test online payments')}
         <label className="span-full">Store policy<textarea rows={5} value={value.policy} onChange={e=>change('policy',e.target.value)} maxLength={1000}/></label></div>}
-      <div className="actions"><button className="button primary" disabled={busy}>Save settings</button>{step<2&&<button type="button" className="button secondary" onClick={()=>setStep(step+1)}>Next step <ArrowRight size={16}/></button>}</div>
+      <div className="actions"><button className="button primary" disabled={busy||!loaded}>Save settings</button>{step<2&&<button type="button" className="button secondary" onClick={()=>setStep(step+1)}>Next step <ArrowRight size={16}/></button>}</div>
     </form>
   </section>
 }

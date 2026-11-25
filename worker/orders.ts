@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { queuePush } from './push'
-import { all,audit,authorizeOrder,availableSlot,configuredSlot,digest,errorMap,I,id,json,now,one,order,parseLines,Problem,publicOrderFields,role,S,services,shop,shopDayStart,slots,statement,localhost } from './shared'
+import { all,audit,authorizeOrder,availableSlot,configuredSlot,digest,errorMap,fulfillmentEnabled,I,id,json,now,one,onlineOrderingAvailable,order,parseLines,Problem,publicOrderFields,role,S,services,shop,shopDayStart,slots,statement,localhost } from './shared'
 import type { Address, Ctx, Env, Order, Product } from './shared'
 
 export const orders = new Hono<Env>()
@@ -18,7 +18,10 @@ async function quote(c:Ctx, data:Record<string,unknown>, pos:boolean, placing=fa
   if (pos?fulfillment!=='counter':(fulfillment!=='pickup'&&fulfillment!=='delivery')) throw new Problem(400,'Invalid fulfillment method.')
   if (pos?(method!=='cash'&&method!=='counter_upi'):(method!=='cash'&&method!=='online')) throw new Problem(400,'Invalid payment method.')
   const config=await shop(db)
-  if (!pos && !config.accepting) throw new Problem(409,'The store is paused.')
+  if (!pos && !onlineOrderingAvailable(config)) throw new Problem(409,'Online ordering is temporarily unavailable.','store_paused')
+  if ((fulfillment==='delivery'||fulfillment==='pickup')&&!fulfillmentEnabled(config,fulfillment)){
+    throw new Problem(409,fulfillment==='delivery'?'Home delivery is temporarily unavailable.':'Store pickup is temporarily unavailable.','fulfillment_unavailable')
+  }
   if (!pos && (method==='online'?!config.enable_online:!config.enable_cod)) throw new Problem(409,'That payment method is unavailable.')
   if (!pos && method==='online' && !localhost(c)) throw new Problem(503,'Online payment provider has not been configured.')
   const products=await all<Product>(db,`SELECT id,sku,name,unit,step,price,stock,min_steps,max_steps,tax_bps,hsn FROM products WHERE id IN (${input.map(()=>'?').join(',')}) AND active=1 AND (expiry IS NULL OR expiry>=date('now','+330 minutes'))`, ...input.map(i=>i.id))
@@ -40,7 +43,7 @@ async function quote(c:Ctx, data:Record<string,unknown>, pos:boolean, placing=fa
     if (fulfillment==='delivery') {
       const addressId=S(data.addressId,'delivery address',80)
       address=await one<Address>(db,`SELECT ${profileFields} FROM addresses WHERE id=? AND account_id=?`,addressId,account.id)
-      if (!address||!services(config,address)) throw new Problem(422,'That address is outside the delivery area. Try store pickup.')
+      if (!address||!services(config,address)) throw new Problem(422,config.enable_pickup?'That address is outside the delivery area. Try store pickup.':'That address is outside the delivery area.')
     }
     const requestedSlot=I(data.slot,0,4102444800,'time window')
     slot=configuredSlot(config,requestedSlot)

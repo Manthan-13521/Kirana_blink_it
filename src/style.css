@@ -312,3 +312,12 @@ tbody tr+tr{border-top:1px solid #edf0e7}
  .catalog-table .actions button{min-height:41px}
  .catalog-mobile-label{display:block;font-size:11px;font-weight:650;color:#526256;margin-bottom:2px}
 }
+
+.fulfillment-settings{border:1px solid var(--line);border-radius:12px;padding:12px;min-width:0}
+.fulfillment-settings legend{font-weight:750;padding-inline:5px}
+.fulfillment-switch{display:flex;justify-content:space-between;align-items:center;gap:12px;min-height:48px;cursor:pointer}
+.fulfillment-switch small{display:block;color:var(--muted);margin-top:2px}
+.fulfillment-switch input[type=checkbox]{appearance:none;flex:0 0 auto;width:44px;height:26px;padding:0;border:1px solid #708176;border-radius:16px;background:#dee5db;position:relative;cursor:pointer}
+.fulfillment-switch input::before{content:"";position:absolute;left:3px;top:3px;width:18px;height:18px;border-radius:50%;background:#fff;box-shadow:0 1px 3px #162f2540}
+.fulfillment-switch input:checked{background:var(--brand);border-color:var(--brand)}
+.fulfillment-switch input:checked::before{transform:translateX(18px)}

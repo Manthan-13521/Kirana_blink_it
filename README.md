@@ -26,6 +26,10 @@ Use different browser profiles if you want to keep multiple role sessions open s
 3. In **Rider**, open the stop, confirm pickup, then record delivery or failure. For cash, enter the order total. The owner can then reconcile collection.
 4. Reopen the order as the customer for the timeline, bill and support options. Use **Owner → Counter sales** to exercise the same stock checks for walk-ins.
 
+## Fulfillment availability
+
+In **Store settings → Delivery & pickup**, enable home delivery and store pickup independently. The master **Accept online orders** switch overrides both. With both methods disabled, the shop remains browsable and baskets stay available. The API and D1 enforce each setting for new orders while existing orders, pending payments, refunds, inventory operations and counter sales continue.
+
 ## Local functionality
 
 - Storefront categories, weighted products, indexed search with regional aliases, basket, saved addresses, delivery eligibility, pickup and delivery windows, idempotent checkout, local payment simulator, order history, jsPDF bills and customer support requests.

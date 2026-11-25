@@ -9,7 +9,7 @@ import { capacity } from './capacity'
 import { razorpay } from './razorpay'
 import { jpegMime,mediaFileId,webpMime } from './media-format'
 import { googleAuth } from './google-auth'
-import { all,audit,coordinate,digest,errorMap,I,id,json,localhost,now,one,parseLines,Problem,role,S,services,shop,statement,token } from './shared'
+import { all,audit,coordinate,digest,errorMap,I,id,json,localhost,now,one,onlineOrderingAvailable,parseLines,Problem,role,S,services,shop,statement,token } from './shared'
 import type { Account,Address,Env } from './shared'
 
 const COOKIE='kirana_session'
@@ -51,7 +51,7 @@ export function application(localRoutes?:Hono<Env>) {
   api.get('/store',async c=>{
     if(!localhost(c))c.header('Cache-Control','public, max-age=20')
     const settings=await publicSettings(c.env.DB)
-    return c.json({settings:{...settings,accepting:c.env.APP_MODE==='staging'?0:settings.accepting},local:localhost(c)})
+    return c.json({settings:{...settings,accepting:Number(c.env.APP_MODE!=='staging'&&onlineOrderingAvailable(settings))},local:localhost(c)})
   })
   api.get('/me',c=>c.json({account:c.get('account')??null,local:localhost(c)}))
   api.post('/auth/logout',async c=>{
@@ -151,6 +151,8 @@ export function application(localRoutes?:Hono<Env>) {
       minimum_order:I(data.minimum_order,0,10000000,'minimum order'),accepting:I(data.accepting,0,1,'store availability'),
       registered,gstin,policy:S(data.policy??'','shop policy',1000,false),brand_color:color,
       enable_cod:I(data.enable_cod,0,1,'cash setting'),enable_online:I(data.enable_online,0,1,'online setting'),
+      ...(data.enable_delivery===undefined?{}:{enable_delivery:I(data.enable_delivery,0,1,'home delivery setting')}),
+      ...(data.enable_pickup===undefined?{}:{enable_pickup:I(data.enable_pickup,0,1,'store pickup setting')}),
     }
     if(values.accepting&&!values.enable_cod&&!values.enable_online) throw new Problem(400,'Enable at least one payment method.')
     await db.batch([statement(db,'UPDATE settings SET '+Object.keys(values).map(k=>k+'=?').join(',')+',revision=revision+1 WHERE id=1',...Object.values(values)),audit(db,actor.id,'store.configure','settings')])

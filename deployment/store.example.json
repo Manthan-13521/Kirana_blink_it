@@ -29,6 +29,8 @@
     "gstin": "",
     "policy": "Contact the store for assistance with cancellations and returns.",
     "brand_color": "#193c32",
+    "enable_delivery": 1,
+    "enable_pickup": 1,
     "enable_cod": 1,
     "enable_online": 0
   }

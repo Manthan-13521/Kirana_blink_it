@@ -28,11 +28,11 @@ export function ProductCard({product,count,change,open}:{product:Product;count:n
   </article>
 }
 type Props={
-  shop:Shop; account:Account|null; query:string; setQuery:(v:string)=>void
+  shop:Shop; refreshShop:()=>Promise<void>; account:Account|null; query:string; setQuery:(v:string)=>void
   cart:CartLine[]; setCart:(lines:CartLine[])=>void; cartOpen:boolean; startCheckout:boolean; openCart:(open:boolean)=>void
   requireLogin:()=>void; openOrder:(order:string)=>void; setLocation:()=>void
 }
-export function Storefront({shop,account,query,setQuery,cart,setCart,cartOpen,startCheckout,openCart,requireLogin,openOrder,setLocation}:Props){
+export function Storefront({shop,refreshShop,account,query,setQuery,cart,setCart,cartOpen,startCheckout,openCart,requireLogin,openOrder,setLocation}:Props){
   const [categories,setCategories]=useState<Category[]>([])
   const [active,setActive]=useState('')
   const [browseAll,setBrowseAll]=useState(false),[loadingMore,setLoadingMore]=useState(false)
@@ -87,7 +87,7 @@ export function Storefront({shop,account,query,setQuery,cart,setCart,cartOpen,st
           <div className="hero-copy">
             <span className="hero-kicker"><Sparkles size={13}/> YOUR NEIGHBOURHOOD GROCER</span>
             <h1>Fresh groceries.<br/>Close to home.</h1>
-            <p>Shop local for pickup or home delivery.</p>
+            <p>{!shop.accepting?'Browse the store and save your favourites.':shop.enable_delivery&&shop.enable_pickup?'Shop local for pickup or home delivery.':shop.enable_delivery?'Shop local for home delivery.':'Shop local for pickup at the store.'}</p>
             <button className="button primary hero-button" onClick={()=>navigate('fresh')}>Shop fresh <ArrowRight size={17}/></button>
           </div>
         </section>
@@ -125,6 +125,6 @@ export function Storefront({shop,account,query,setQuery,cart,setCart,cartOpen,st
       <div className="detail-image">{photo(selected)}</div><p className="muted">{selected.brand} · {pack(selected.unit,selected.step)}</p>
       <p>{selected.description}</p><div className="summary-line"><strong>{rupee(selected.price)}</strong><Quantity name={selected.name} count={cart.find(l=>l.product.id===selected.id)?.steps??0} onChange={n=>change(selected,n)} min={selected.min_steps} max={Math.min(selected.max_steps,Math.floor(selected.stock/selected.step))} disabled={selected.stock<selected.step*selected.min_steps}/></div>
     </Sheet>}
-    {cartOpen&&<Cart shop={shop} account={account} startAtCheckout={startCheckout} cart={cart} change={change} onClose={()=>openCart(false)} requireLogin={requireLogin} complete={oid=>{setCart([]);openCart(false);openOrder(oid)}}/>}
+    {cartOpen&&<Cart shop={shop} refreshShop={refreshShop} account={account} startAtCheckout={startCheckout} cart={cart} change={change} onClose={()=>openCart(false)} requireLogin={requireLogin} complete={oid=>{setCart([]);openCart(false);openOrder(oid)}}/>}
   </>
 }

@@ -39,6 +39,8 @@ export type Shop = {
   gstin: string
   policy: string
   brand_color: string
+  enable_delivery: number
+  enable_pickup: number
   enable_cod: number
   enable_online: number
 }
@@ -146,8 +148,12 @@ export async function availableSlot(db:D1Database,config:Shop,fulfillment:'picku
   return (row?.used??0)<(fulfillment==='delivery'?config.delivery_capacity:config.pickup_capacity)
 }
 
-export async function slots(db:D1Database,config:Shop, fulfillment:'pickup'|'delivery', time=now()) {
-  if (!config.accepting) return []
+export type Fulfillment='delivery'|'pickup'
+export const onlineOrderingAvailable=(config:Pick<Shop,'accepting'|'enable_delivery'|'enable_pickup'>)=>Boolean(config.accepting&&(config.enable_delivery||config.enable_pickup))
+export const fulfillmentEnabled=(config:Pick<Shop,'enable_delivery'|'enable_pickup'>,mode:Fulfillment)=>Boolean(mode==='delivery'?config.enable_delivery:config.enable_pickup)
+
+export async function slots(db:D1Database,config:Shop, fulfillment:Fulfillment, time=now()) {
+  if (!config.accepting||!fulfillmentEnabled(config,fulfillment)) return []
   const day=shopDayStart(time)
   const result: { start:number; end:number; remaining:number }[]=[]
   const usage = await all<{slot_start:number;slot_end:number;used:number}>(db,`SELECT slot_start,slot_end,COUNT(*) used FROM orders
@@ -189,7 +195,8 @@ export function errorMap(e: unknown) {
   if (message.includes('slot_full')) return new Problem(409,'That window just filled. Select another window or store pickup.','slot_full')
   if (message.includes('insufficient_stock')) return new Problem(409,'A product has insufficient stock. Review the basket.','stock')
   if (message.includes('catalog_changed')) return new Problem(409,'A price or quantity limit changed. Review the basket.','quote_changed')
-  if (message.includes('store_paused')) return new Problem(409,'The store is not accepting online orders.')
+  if (message.includes('store_paused')) return new Problem(409,'Online ordering is temporarily unavailable.','store_paused')
+  if (message.includes('fulfillment_unavailable')) return new Problem(409,'The selected order method is temporarily unavailable.','fulfillment_unavailable')
   if (message.includes('refund_limit')) return new Problem(409,'The refund exceeds the remaining paid amount.')
   if (message.includes('one_active_rider')||message.includes('accounts.role')) return new Problem(409,'An active delivery partner already exists.')
   if (message.includes('UNIQUE constraint')) return new Problem(409,'This record already exists.')

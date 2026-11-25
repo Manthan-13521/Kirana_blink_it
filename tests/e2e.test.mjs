@@ -289,3 +289,91 @@ test('Razorpay webhook replays are scoped to stored test links and exact amounts
     assert.deepEqual((await read()).map(row=>[row.status,row.payment_id]),[['paid','pay_QATEST123']])
   }finally{await staging.stop()}
 })
+
+test('fulfillment switches govern slots, quotes and new orders for all four combinations',async()=>{
+  const baseline=await owner('/api/admin/settings')
+  assert.deepEqual([baseline.enable_delivery,baseline.enable_pickup],[1,1])
+  const modes=['delivery','pickup']
+  const initial=await Promise.all(modes.map(mode=>available(mode)))
+  const requests=Object.fromEntries(modes.map((fulfillment,index)=>[fulfillment,{
+    fulfillment,slot:initial[index],method:'cash',items:[item('chips')],
+    ...(fulfillment==='delivery'?{addressId:'demo-address'}:{}),
+  }]))
+  const prepare=async mode=>({...requests[mode],version:(await action(customer,'/quote',requests[mode])).version,key:crypto.randomUUID()})
+  const stale=Object.fromEntries(await Promise.all(modes.map(async mode=>[mode,await prepare(mode)])))
+  try{
+    for(const [delivery,pickup] of [[1,1],[1,0],[0,1],[0,0]]){
+      const updates={...baseline,enable_delivery:delivery,enable_pickup:pickup}
+      await action(customer,'/admin/settings',updates,403,'PUT')
+      await action(owner,'/admin/settings',updates,200,'PUT')
+      const {settings}=await anonymous('/api/store')
+      assert.deepEqual([settings.enable_delivery,settings.enable_pickup,settings.accepting],[delivery,pickup,Number(delivery||pickup)])
+      for(const [index,mode] of modes.entries()){
+        const enabled=[delivery,pickup][index]
+        const slots=await anonymous('/api/slots?mode='+mode)
+        assert.equal(Boolean(slots.length),Boolean(enabled))
+        if(enabled){
+          const {id}=await action(customer,'/orders',await prepare(mode),201)
+          assert.equal((await customer('/api/orders/'+id)).fulfillment,mode)
+        }else{
+          const before=await stock('chips')
+          const expectedCode=delivery||pickup?'fulfillment_unavailable':'store_paused'
+          assert.equal((await action(customer,'/quote',requests[mode],409)).code,expectedCode)
+          assert.equal((await action(customer,'/orders',stale[mode],409)).code,expectedCode)
+          assert.equal(await stock('chips'),before)
+        }
+      }
+    }
+    const {enable_delivery,enable_pickup,...legacy}=await owner('/api/admin/settings')
+    await action(owner,'/admin/settings',legacy,200,'PUT')
+    const saved=await owner('/api/admin/settings')
+    assert.deepEqual([saved.enable_delivery,saved.enable_pickup],[0,0])
+    await action(owner,'/admin/settings',{...saved,enable_delivery:2},400,'PUT')
+    assert.equal((await anonymous('/api/catalog/chips')).id,'chips')
+  }finally{await action(owner,'/admin/settings',baseline,200,'PUT')}
+})
+
+test('a fulfillment switch races safely with checkout and preserves pending payments and counter sales',async()=>{
+  const baseline=await owner('/api/admin/settings')
+  const pendingRequest={fulfillment:'pickup',method:'online',slot:await available('pickup'),items:[item('tea')]}
+  const pendingQuote=await action(customer,'/quote',pendingRequest)
+  const pendingPayload={...pendingRequest,version:pendingQuote.version,key:crypto.randomUUID()}
+  const {id:pending}=await action(customer,'/orders',pendingPayload,201)
+  await action(customer,'/cart',{items:[item('tea')]},200,'PUT')
+  const request={...pendingRequest,method:'cash',items:[item('chips')]}
+  const {version}=await action(customer,'/quote',request)
+  const counterBefore=await stock('chips')
+  const disable={...baseline,enable_delivery:0,enable_pickup:0}
+  const attempts=Array.from({length:4},()=>({...request,version,key:crypto.randomUUID()}))
+  try{
+    const inFlight=attempts.map(async payload=>{
+      try{return (await action(customer,'/orders',payload,201)).id}
+      catch(error){assert.match(String(error),/409/);return null}
+    })
+    await action(owner,'/admin/settings',disable,200,'PUT')
+    const settled=(await Promise.all(inFlight)).filter(Boolean)
+    const latest=await owner('/api/admin/settings')
+    for(const id of settled){
+      const [row]=await instance.readBusiness('SELECT config_revision FROM orders WHERE id=?',id)
+      assert.ok(row.config_revision<latest.revision)
+    }
+    const blocked=await Promise.all(Array.from({length:4},()=>action(customer,'/orders',
+      {...request,version,key:crypto.randomUUID()},409)))
+    assert.ok(blocked.every(response=>response.code==='store_paused'))
+    assert.equal(await stock('chips'),counterBefore-settled.length*90)
+    assert.deepEqual((await customer('/api/cart')).items,[item('tea')])
+    assert.deepEqual(await action(customer,'/orders',pendingPayload),{id:pending,replayed:true})
+    await action(customer,'/orders/'+pending+'/test-payment',{result:'paid'})
+    for(const next of ['accepted','packing','ready','completed'])await state(owner,pending,next)
+    assert.equal((await customer('/api/orders/'+pending)).payment_status,'paid')
+    await action(customer,'/orders/'+pending+'/cases',{kind:'refund',reason:'Test refund while paused'},201)
+    const opened=(await owner('/api/admin/cases')).find(entry=>entry.order_id===pending)
+    await action(owner,'/admin/cases/'+opened.id,{status:'approved',amount:100})
+    assert.equal((await customer('/api/orders/'+pending)).refunds[0].amount,100)
+    const walkIn=await place(owner,pos([item('chips')]))
+    assert.equal((await owner('/api/orders/'+walkIn.id)).status,'completed')
+    assert.equal(await stock('chips'),counterBefore-(settled.length+1)*90)
+    await action(owner,'/admin/products/chips/stock',{quantity:90,reason:'receipt'})
+    assert.equal(await stock('chips'),counterBefore-settled.length*90)
+  }finally{await action(owner,'/admin/settings',baseline,200,'PUT')}
+})

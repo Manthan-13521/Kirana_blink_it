@@ -24,8 +24,8 @@ if(googleOrigin!==undefined){
 const staticMediaOrigin=config.staticMediaOrigin
 if(staticMediaOrigin!==undefined)assert.equal(staticMediaOrigin,'https://'+config.mediaProject+'.pages.dev',
   'Use the dedicated Pages media hostname for static image delivery.')
-const data=config.store
-assert.ok(data&&typeof data==='object')
+assert.ok(config.store&&typeof config.store==='object')
+const data={enable_delivery:1,enable_pickup:1,...config.store}
 const fields=Object.keys(template.store)
 assert.deepEqual(Object.keys(data).sort(),[...fields].sort(),'The store settings must match the declared fields.')
 for(const key of fields){
@@ -36,6 +36,7 @@ for(const key of fields){
 }
 assert.equal(data.accepting,0,'Provision new installations with order acceptance disabled.')
 assert.equal(data.enable_online,0,'Provision new installations with online payment disabled.')
+for(const key of ['enable_delivery','enable_pickup'])assert.ok([0,1].includes(data[key]),key+' must be 0 or 1.')
 const root=resolve(destination)
 await mkdir(root,{recursive:true})
 assert.deepEqual(await readdir(root),[],'The release directory must be empty.')

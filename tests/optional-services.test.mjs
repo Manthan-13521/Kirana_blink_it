@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { createHmac,generateKeyPairSync,verify } from 'node:crypto'
-import { readFile } from 'node:fs/promises'
+import { readFile,readdir } from 'node:fs/promises'
 import { DatabaseSync } from 'node:sqlite'
 import { registerHooks } from 'node:module'
 import { test } from 'node:test'
@@ -84,5 +84,27 @@ test('optional-service quota refuses excess work and recovers on the next UTC da
     assert.equal(await reserve(db,'routing',9,10),true)
     assert.equal(sqlite.prepare("SELECT used FROM service_budget WHERE service='routing'").get().used,9)
     assert.equal(sqlite.prepare('SELECT total FROM orders').get().total,4200)
+  }finally{sqlite.close()}
+})
+
+test('the D1 insert guard rejects an unavailable fulfillment method even with the current revision',async()=>{
+  const sqlite=new DatabaseSync(':memory:')
+  try{
+    const migrations=new URL('../migrations/',import.meta.url)
+    for(const file of (await readdir(migrations)).filter(name=>name.endsWith('.sql')).sort()){
+      sqlite.exec(await readFile(new URL(file,migrations),'utf8'))
+    }
+    sqlite.exec('UPDATE settings SET enable_delivery=0,revision=1 WHERE id=1')
+    const insert=sqlite.prepare(`INSERT INTO orders
+      (id,account_id,request_key,request_fingerprint,channel,fulfillment,status,payment_method,payment_status,
+        subtotal,fees,total,tax,slot_start,slot_end,billing_json,created_at,updated_at,config_revision)
+      VALUES (?,'demo-customer',?,'test','online',?,'placed','cash','cash_due',
+        100,0,100,0,2000000000,2000003600,'{}',1750000000,1750000000,?)`)
+    assert.throws(()=>insert.run('blocked','blocked','delivery',1),/fulfillment_unavailable/)
+    assert.throws(()=>insert.run('stale','stale','pickup',0),/catalog_changed/)
+    assert.equal(insert.run('allowed','allowed','pickup',1).changes,1)
+    sqlite.exec('UPDATE settings SET enable_pickup=0,revision=2 WHERE id=1')
+    assert.throws(()=>insert.run('closed','closed','pickup',2),/store_paused/)
+    assert.equal(sqlite.prepare('SELECT count(*) count FROM orders').get().count,1)
   }finally{sqlite.close()}
 })
