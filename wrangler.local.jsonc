@@ -1,0 +1,13 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "kirana-local",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-10-01",
+  "assets": { "directory": "./dist", "binding": "ASSETS", "not_found_handling": "single-page-application", "run_worker_first": ["/api/*", "/media/*"] },
+  "vars": { "APP_MODE": "local" },
+  "d1_databases": [
+    { "binding": "DB", "database_name": "kirana-local", "database_id": "1c9d02d3-c670-4000-8000-000000000001", "migrations_dir": "migrations" },
+    { "binding": "MEDIA", "database_name": "kirana-media-local", "database_id": "1c9d02d3-c670-4000-8000-000000000002", "migrations_dir": "media-migrations" }
+  ],
+  "triggers": { "crons": ["*/10 * * * *"] }
+}

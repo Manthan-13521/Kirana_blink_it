@@ -1,0 +1,217 @@
+import { lazy,Suspense,useEffect,useRef,useState } from 'react'
+import { createRoot } from 'react-dom/client'
+import { ArrowRight,Bell,ChevronDown,CircleUser,MapPin,Search,ShoppingBasket,Store,Truck,X } from 'lucide-react'
+import { AddressForm,OrderList,OrderView } from './checkout'
+import { api,message,pretty,rupee,send } from './lib'
+import type { Account,Address,CartLine,OrderDetail,Product,Shop } from './lib'
+import { Storefront } from './shop'
+import { Empty,ErrorText,Mark,Sheet,Success } from './ui'
+import './style.css'
+const Owner=lazy(()=>import('./admin').then(m=>({default:m.OwnerDashboard})))
+const Rider=lazy(()=>import('./rider').then(m=>({default:m.RiderDashboard})))
+const pathView=()=>location.pathname.startsWith('/owner')?'owner':location.pathname.startsWith('/rider')?'rider':'shop'
+const cartKey=(id?:string)=>'kirana-basket-'+(id||'guest')
+function readCart(key:string):CartLine[]|null{
+  try{
+    const raw=JSON.parse(localStorage.getItem(key)||'null')
+    return raw&&Date.now()-raw.saved<172800000&&Array.isArray(raw.lines)?raw.lines:null
+  }catch{return null}
+}
+type Modal='signin'|'profile'|'orders'|'location'|'notices'|null
+
+function App(){
+  const [shop,setShop]=useState<Shop|null>(null),[account,setAccount]=useState<Account|null>(null)
+  const [local,setLocal]=useState(false),[ready,setReady]=useState(false),[error,setError]=useState('')
+  const [view,setView]=useState(pathView),[query,setQuery]=useState(''),[modal,setModal]=useState<Modal>(null)
+  const [loginRole,setLoginRole]=useState<'customer'|'owner'|'rider'>('customer')
+  const [cart,setCart]=useState<CartLine[]>([]),[cartOpen,openCart]=useState(false),[order,setOrder]=useState<string|null>(null)
+  const [resumeCheckout,setResumeCheckout]=useState(false)
+  const checkoutIntent=useRef(false)
+  const cartChanged=useRef(false)
+  const cartCount=cart.reduce((count,line)=>count+line.steps,0)
+  const cartValue=cart.reduce((total,line)=>total+line.steps*line.product.price,0)
+  const refreshShop=async()=>{const result=await api<{settings:Shop;local:boolean}>('/store',{cache:'reload'});setShop(result.settings);setLocal(result.local)}
+  useEffect(()=>{
+    Promise.all([refreshShop(),api<{account:Account|null}>('/me')]).then(async([,me])=>{
+      const key=cartKey(me.account?.role==='customer'?me.account.id:undefined)
+      const cached=readCart(key)
+      const saved=!cached&&me.account?.role==='customer'?await api<{lines:CartLine[]}>('/cart').catch(()=>null):null
+      setAccount(me.account);setCart(cached??saved?.lines??[]);setReady(true)
+    },e=>{setError(message(e));setReady(true)})
+    const handle=()=>{setView(pathView());setModal(null);setOrder(null);openCart(false)}
+    window.addEventListener('popstate',handle)
+    return()=>window.removeEventListener('popstate',handle)
+  },[])
+  useEffect(()=>{
+    if(!ready)return
+    const key=cartKey(account?.role==='customer'?account.id:undefined)
+    try{localStorage.setItem(key,JSON.stringify({lines:cart,saved:Date.now()}))}catch{/* Keep the working basket available in memory. */}
+    if(account?.role!=='customer'||!cartChanged.current)return
+    const t=setTimeout(()=>{
+      cartChanged.current=false
+      send('/cart',{items:cart.map(l=>({id:l.product.id,steps:l.steps}))},'PUT')
+        .catch(e=>console.warn('Could not sync basket',e))
+    },650)
+    return()=>clearTimeout(t)
+  },[cart,account?.id,ready])
+  const changeCart=(lines:CartLine[])=>{cartChanged.current=true;setCart(lines)}
+  const go=(target:'shop'|'owner'|'rider')=>{
+    if(target!==view){history.pushState({},'',target==='shop'?'/':'/'+target);setView(target);window.scrollTo(0,0);openCart(false);setOrder(null)}
+    setModal(null)
+  }
+  const signIn=(role:'customer'|'owner'|'rider')=>{setLoginRole(role);setModal('signin')}
+  async function signed(actor:Account){
+    cartChanged.current=false
+    if(actor.role==='customer'){
+      const key=cartKey(actor.id)
+      const cached=readCart(key)
+      const saved=cached?null:await api<{lines:CartLine[]}>('/cart').catch(()=>null)
+      const guest=readCart(cartKey())??[]
+      const existing=cached??saved?.lines??[]
+      if(guest.length&&(checkoutIntent.current||!existing.length)){
+        const combined=new Map(existing.map(line=>[line.product.id,line]))
+        for(const line of guest){
+          const product=line.product
+          const prior=combined.get(product.id)
+          if(!prior&&combined.size>=40)continue
+          const max=Math.min(product.max_steps,Math.floor(product.stock/product.step))
+          const steps=Math.min(max,(prior?.steps??0)+line.steps)
+          if(steps>=product.min_steps)combined.set(product.id,{product,steps})
+        }
+        setCart([...combined.values()]);cartChanged.current=true
+        try{localStorage.removeItem(cartKey())}catch{/* Storage access can be disabled by the browser. */}
+      }else setCart(existing)
+    } else setCart(readCart(cartKey())??[])
+    setAccount(actor);setModal(null)
+    if(actor.role==='owner'||actor.role==='staff')go('owner')
+    if(actor.role==='rider')go('rider')
+    if(actor.role==='customer'&&view!=='shop')go('shop')
+    if(actor.role==='customer'&&checkoutIntent.current){
+      setResumeCheckout(true);openCart(true)
+    }
+    checkoutIntent.current=false
+  }
+  async function logOut(){
+    try{await send('/auth/logout');cartChanged.current=false;setAccount(null);setCart(readCart(cartKey())??[]);setOrder(null);setModal(null);go('shop')}
+    catch(e){setError(message(e))}
+  }
+  const reorder=async(items:OrderDetail['items'])=>{
+    const products=await Promise.all(items.map(item=>api<Product>('/catalog/'+item.product_id).catch(()=>null)))
+    const map=new Map(cart.map(l=>[l.product.id,l]))
+    products.forEach((p,i)=>{
+      if(!p)return
+      const prior=map.get(p.id)?.steps??0, max=Math.min(p.max_steps,Math.floor(p.stock/p.step))
+      const qty=Math.min(prior+Math.floor(items[i].quantity/p.step),max)
+      if(qty>=p.min_steps&&map.size<40)map.set(p.id,{product:p,steps:qty})
+    })
+    if(products.every(p=>!p))throw new Error('These items are currently unavailable.')
+    changeCart([...map.values()])
+  }
+  const currentRole=view==='owner'?'owner':view==='rider'?'rider':'customer'
+  const allowed=view==='shop'||(view==='owner'&&['owner','staff'].includes(account?.role??''))||(view==='rider'&&account?.role==='rider')
+  if(!shop)return <div className="shell startup"><Mark/><ErrorText text={error}/>{!error&&<p>Opening the store…</p>}</div>
+  return <div style={{'--brand':shop.brand_color} as React.CSSProperties}>
+    <div className="topbar"><div className="shell top-inner"><span><Store size={13}/> {local?'Local demo store':shop.accepting?'Your neighbourhood grocery':'Store preview · Online orders closed'}</span>
+    </div></div>
+    <header className="main-header"><div className="shell header-inner">
+      <button className="brand-button" onClick={()=>go('shop')} aria-label={shop.name+' storefront'}><Mark name={shop.name}/></button>
+      {view==='shop'&&<>
+        <button className="location-button" onClick={()=>setModal('location')}><span className="location-icon"><MapPin size={18}/></span><span><small>SHOPPING NEAR</small><b>{shop.locality}</b></span><ChevronDown size={13}/></button>
+        <label className="search-box site-search"><Search size={20}/><input aria-label="Search groceries" placeholder={'Search “milk”, “bread”, “atta”…'} value={query} onChange={e=>setQuery(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')document.getElementById('products')?.scrollIntoView({behavior:'smooth'})}}/>{query&&<button className="search-clear" aria-label="Clear search" onClick={()=>setQuery('')}><X size={16}/></button>}</label>
+      </>}
+      <div className="header-actions">
+        {account&&<button className="icon-button bell-button" aria-label="Notifications" onClick={()=>setModal('notices')}><Bell size={20}/></button>}
+        <button className="account-button" aria-label={account?'Account for '+account.name:'Sign in'} onClick={()=>account?setModal('profile'):signIn(currentRole)}><CircleUser size={21}/><span>{account?account.name:'Sign in'}</span></button>
+        {view==='shop'&&<button className="basket-button" aria-label={'My basket'+(cartCount?', '+cartCount+' items':'')} onClick={()=>openCart(true)}><ShoppingBasket size={20}/><span>{cartCount?rupee(cartValue):'My basket'}</span>{cartCount>0&&<b>{cartCount}</b>}</button>}
+      </div>
+    </div></header>
+    <ErrorText text={error}/>
+    {view==='shop'?<Storefront shop={shop} account={account} query={query} setQuery={setQuery} cart={cart} setCart={changeCart} cartOpen={cartOpen} startCheckout={resumeCheckout} openCart={open=>{setResumeCheckout(false);openCart(open)}}
+      requireLogin={()=>{checkoutIntent.current=true;openCart(false);signIn('customer')}} openOrder={setOrder} setLocation={()=>setModal('location')}/>
+      :!allowed||!account?<main className="shell role-entry">
+        <div className="console-hero"><div><small>{view==='owner'?'STORE WORKSPACE':'DELIVERY WORKSPACE'}</small><h1>{view==='owner'?'Manage your Kirana':'Deliver for your Kirana'}</h1><p>{view==='owner'?'Catalog, orders, counter sales and store settings.':'Assigned orders, route stops and cash collections.'}</p></div><button className="button light" onClick={()=>signIn(currentRole)}>Sign in as {view==='owner'?'owner':'rider'} <ArrowRight size={17}/></button></div>
+      </main>:<Suspense fallback={<main className="shell startup"><p>Loading workspace…</p></main>}>{view==='owner'?<Owner account={account} shop={shop} refreshShop={refreshShop}/>:<Rider account={account} shop={shop}/>}</Suspense>}
+    {modal==='signin'&&<SignIn role={loginRole} local={local} close={()=>{checkoutIntent.current=false;setModal(null)}} signed={signed}/>}
+    {modal==='profile'&&account&&<Profile account={account} setAccount={setAccount} local={local} close={()=>setModal(null)} logOut={()=>void logOut()} orders={()=>setModal('orders')} addresses={()=>setModal('location')} switchRole={()=>signIn(currentRole)}/>}
+    {modal==='orders'&&account&&<Sheet title="Order history" onClose={()=>setModal(null)} wide><OrderList open={id=>{setModal(null);setOrder(id)}}/></Sheet>}
+    {modal==='location'&&<Location shop={shop} account={account} onClose={()=>setModal(null)} signIn={()=>signIn('customer')}/>}
+    {modal==='notices'&&account&&<Notices close={()=>setModal(null)} open={id=>{setModal(null);setOrder(id)}}/>}
+    {order&&account&&<OrderView orderId={order} onClose={()=>setOrder(null)} account={account} shop={shop} reorder={account.role==='customer'?reorder:undefined}/>}
+  </div>
+}
+
+function SignIn({role,local,close,signed}:{role:'customer'|'owner'|'rider';local:boolean;close:()=>void;signed:(a:Account)=>Promise<void>}){
+  const [error,setError]=useState(''),[busy,setBusy]=useState(false),[register,setRegister]=useState(false)
+  const [google,setGoogle]=useState<boolean|null>(null)
+  useEffect(()=>{
+    if(local)return
+    const controller=new AbortController()
+    api<{enabled:boolean}>('/auth/google/status',{signal:controller.signal}).then(status=>setGoogle(status.enabled),()=>{
+      if(!controller.signal.aborted)setGoogle(false)
+    })
+    return()=>controller.abort()
+  },[local])
+  async function demo(choice:string){
+    setBusy(true);setError('')
+    try{await signed(await send<Account>('/auth/demo',{role:choice}))}catch(e){setError(message(e))}finally{setBusy(false)}
+  }
+  return <Sheet title={register?'Create local account':'Welcome to Kirana'} onClose={close}>
+    <div className="stack"><ErrorText text={error}/>
+      {!local?google?<a className="button primary full" href={'/api/auth/google?workspace='+(role==='customer'?'shop':role)}>Continue with Google <ArrowRight size={16}/></a>:<p>{google===null?'Checking sign-in availability…':'Google sign-in is not configured for this preview.'}</p>
+      :register?<form className="stack" onSubmit={async e=>{
+        e.preventDefault();setBusy(true);setError('')
+        try{await signed(await send<Account>('/auth/register-local',Object.fromEntries(new FormData(e.currentTarget))))}catch(e){setError(message(e))}finally{setBusy(false)}
+      }}><label>Name<input name="name" required maxLength={80}/></label><label>Phone<input name="phone" type="tel" maxLength={22}/></label><label>Team invite code, if provided<input name="invite" maxLength={80}/></label><button className="button primary" disabled={busy}>Create local account</button><button type="button" className="text-arrow" onClick={()=>setRegister(false)}>Back to demo sign-in</button></form>
+      :<><p className="muted">Local demo accounts let you try every interface.</p>
+        <button className="button primary full" disabled={busy} onClick={()=>void demo(role)}>Continue as demo {role} <ArrowRight size={16}/></button>
+        <div className="actions">{(['customer','owner','rider','staff'] as const).filter(r=>r!==role).map(r=><button key={r} className="button secondary" disabled={busy} onClick={()=>void demo(r)}>{pretty(r)}</button>)}</div>
+        <button className="text-arrow align-start" onClick={()=>setRegister(true)}>Create a local account or accept invite <ArrowRight size={15}/></button></>}
+    </div>
+  </Sheet>
+}
+function Profile({account,setAccount,close,logOut,local,orders,addresses,switchRole}:{account:Account;setAccount:(a:Account)=>void;close:()=>void;logOut:()=>void;local:boolean;orders:()=>void;addresses:()=>void;switchRole:()=>void}){
+  const [error,setError]=useState(''),[ok,setOk]=useState('')
+  return <Sheet title="Your account" onClose={close}><div className="stack">
+    <div className="profile-card"><span className="profile-icon"><CircleUser size={26}/></span><div><b>{account.name}</b><small>{pretty(account.role)}</small></div></div>
+    <ErrorText text={error}/><Success text={ok}/>
+    <form className="stack" onSubmit={async e=>{e.preventDefault();setError('');setOk('')
+      try{setAccount(await send<Account>('/me',Object.fromEntries(new FormData(e.currentTarget)),'PUT'));setOk('Profile saved.')}catch(err){setError(message(err))}
+    }}><label>Name<input name="name" defaultValue={account.name} required maxLength={80}/></label><label>Phone<input name="phone" type="tel" defaultValue={account.phone} maxLength={24}/></label><button className="button primary align-start">Save profile</button></form>
+    <div className="actions">{account.role==='customer'&&<><button className="button secondary" onClick={orders}>Order history</button><button className="button secondary" onClick={addresses}>Saved addresses</button></>}{local&&<button className="button secondary" onClick={switchRole}>Switch demo account</button>}<button className="button secondary" onClick={logOut}>Sign out</button></div>
+  </div></Sheet>
+}
+function Location({shop,account,onClose,signIn}:{shop:Shop;account:Account|null;onClose:()=>void;signIn:()=>void}){
+  const [addresses,setAddresses]=useState<Address[]>([]),[adding,setAdding]=useState(false),[error,setError]=useState('')
+  useEffect(()=>{if(account?.role==='customer')api<Address[]>('/addresses').then(setAddresses,e=>setError(message(e)))},[account?.id,account?.role])
+  return <Sheet title="Delivery & store pickup" onClose={onClose}><div className="stack">
+    <div className="info-box"><Store size={20}/><span><b>{shop.name}</b><small>{shop.address} · {shop.locality}</small></span></div>
+    <div className="info-box"><Truck size={20}/><span><b>Home delivery within {shop.radius_km} km</b><small>Delivery and collection windows are selected at checkout.</small></span></div>
+    <ErrorText text={error}/>
+    {account?.role==='customer'?<>
+      <div className="summary-line"><b>Saved addresses</b><button className="text-arrow" onClick={()=>setAdding(!adding)}>{adding?'Close form':'Add address'}</button></div>
+      {addresses.map(a=><div className="panel padded summary-line" key={a.id}><div><b>{a.label}</b><small className="table-secondary">{a.line1}, {a.locality} {a.pin}</small></div><button className="button secondary small" onClick={async()=>{try{await api('/addresses/'+a.id,{method:'DELETE'});setAddresses(addresses.filter(x=>x.id!==a.id))}catch(e){setError(message(e))}}}>Remove</button></div>)}
+      {adding&&<AddressForm shop={shop} account={account} saved={a=>{setAddresses([a,...addresses]);setAdding(false)}}/>}
+    </>:<button className="button primary" onClick={signIn}>Sign in to save an address</button>}
+  </div></Sheet>
+}
+function Notices({close,open}:{close:()=>void;open:(id:string)=>void}){
+  const [rows,setRows]=useState<{id:number;order_id:string;message:string;read_at:number|null}[]>([]),[enabled,setEnabled]=useState(false),[error,setError]=useState('')
+  useEffect(()=>{api<{notices:typeof rows;enabled:boolean}>('/notices').then(x=>{setRows(x.notices);setEnabled(x.enabled)},e=>setError(message(e)))},[])
+  return <Sheet title="Notifications" onClose={close}><div className="stack"><ErrorText text={error}/>
+    <label className="check-label"><input type="checkbox" checked={enabled} onChange={async e=>{
+      const value=e.target.checked
+      try{
+        if(value&&'Notification' in window){
+          const permission=await Notification.requestPermission()
+          if(permission!=='granted')throw new Error('Browser notifications were not enabled.')
+          await navigator.serviceWorker?.ready.then(reg=>reg.showNotification('Kirana test notification',{body:'Local notifications are enabled.'}))
+        }
+        await send('/notices/preferences',{enabled:value},'PUT');setEnabled(value)
+      }catch(e){setError(message(e))}
+    }}/> Enable local notification preview</label>
+    {!rows.length?<Empty title="No notifications yet"/>:rows.map(r=><button type="button" className="order-row" key={r.id} onClick={()=>open(r.order_id)}>{r.message}<ArrowRight size={15}/></button>)}
+    {!!rows.length&&<button className="button secondary" onClick={async()=>{try{await send('/notices/read');setRows(rows.map(r=>({...r,read_at:Date.now()})))}catch(e){setError(message(e))}}}>Mark all as read</button>}
+  </div></Sheet>
+}
+createRoot(document.getElementById('root')!).render(<App/>)
+if('serviceWorker' in navigator&&import.meta.env.PROD)navigator.serviceWorker.register('/sw.js').catch(error=>console.warn('PWA registration failed',error))

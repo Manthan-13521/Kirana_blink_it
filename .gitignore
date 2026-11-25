@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.wrangler/
+.dev.vars*
+.env*
+coverage/
+.store.local.json
+
+.DS_Store
+*.sqlite*
+*.pem
+*.key
+*.enc
+*.ndjson
