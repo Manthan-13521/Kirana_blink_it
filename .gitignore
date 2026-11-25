@@ -12,3 +12,6 @@ coverage/
 *.key
 *.enc
 *.ndjson
+
+.store.*.json
+*.secrets.json

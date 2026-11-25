@@ -1,5 +1,7 @@
 import { after, before, test } from 'node:test'
 import assert from 'node:assert/strict'
+import { createHmac } from 'node:crypto'
+import { fileURLToPath } from 'node:url'
 import { readFile } from 'node:fs/promises'
 import { action,harness,login,place,session } from './harness.mjs'
 
@@ -258,5 +260,32 @@ test('hosted staging pauses the checkout API even when store settings accept ord
     assert.deepEqual(await guest('/api/slots?mode=pickup'),[])
     const [persisted]=await staging.readBusiness('SELECT accepting FROM settings WHERE id=1')
     assert.equal(persisted.accepting,1)
+  }finally{await staging.stop()}
+})
+
+test('Razorpay webhook replays are scoped to stored test links and exact amounts',async()=>{
+  const secret='fixture-webhook-local-only'
+  const seed=fileURLToPath(new URL('./razorpay-fixture.sql',import.meta.url))
+  const staging=await harness(seed,{entry:'production',mode:'staging',vars:{
+    RAZORPAY_KEY_ID:'rzp_test_qa',RAZORPAY_KEY_SECRET:'fixture-provider-key',RAZORPAY_WEBHOOK_SECRET:secret,
+  }})
+  try{
+    const note={event:'payment_link.paid',payload:{
+      payment_link:{entity:{id:'plink_QATEST123',reference_id:'fixture-payment-reference',amount:100,currency:'INR',amount_paid:100}},
+      payment:{entity:{id:'pay_QATEST123',status:'captured',amount:100,currency:'INR'}},
+    }}
+    const post=async(body,signature)=>fetch(staging.base+'/api/webhooks/razorpay',{
+      method:'POST',headers:{'Content-Type':'application/json','X-Razorpay-Signature':signature},body,
+    })
+    const body=JSON.stringify(note),signature=createHmac('sha256',secret).update(body).digest('hex')
+    assert.equal((await post(body,'0'.repeat(64))).status,403)
+    assert.equal((await post(body+' ',signature)).status,403)
+    const altered=JSON.stringify({...note,payload:{...note.payload,payment:{entity:{...note.payload.payment.entity,amount:50}}}})
+    assert.equal((await post(altered,createHmac('sha256',secret).update(altered).digest('hex'))).status,200)
+    const read=()=>staging.readBusiness('SELECT status,payment_id FROM test_payments')
+    assert.deepEqual((await read()).map(row=>[row.status,row.payment_id]),[['open',null]])
+    assert.equal((await post(body,signature)).status,200)
+    assert.equal((await post(body,signature)).status,200)
+    assert.deepEqual((await read()).map(row=>[row.status,row.payment_id]),[['paid','pay_QATEST123']])
   }finally{await staging.stop()}
 })

@@ -1,6 +1,5 @@
 import { useEffect,useState } from 'react'
 import { ArrowDown,ArrowRight,ArrowUp,MapPin,Navigation,PackageCheck,Route,Truck,Wallet } from 'lucide-react'
-import { distance } from '../worker/shared'
 import { OrderView } from './checkout'
 import { api,displayOrder,message,pretty,rupee,send,windowLabel } from './lib'
 import type { Account,Address,OrderDetail,OrderRow,Shop } from './lib'
@@ -8,36 +7,17 @@ import { Empty,ErrorText,Heading,Status,Success } from './ui'
 
 type Stop={id:string;rank:number;status:string;address:Address}
 type Point={latitude:number;longitude:number}
-function km(origin:Point,stop:Stop){
-  return stop.address.latitude===null||stop.address.longitude===null?Infinity:distance(origin.latitude,origin.longitude,stop.address.latitude,stop.address.longitude)
-}
-function point(stop:Stop,origin:Point):Point{
-  return {latitude:stop.address.latitude??origin.latitude,longitude:stop.address.longitude??origin.longitude}
-}
-function optimize(origin:Point,stops:Stop[]){
-  const remaining=[...stops], output:Stop[]=[]
-  let position=origin
-  while(remaining.length){remaining.sort((a,b)=>km(position,a)-km(position,b));const next=remaining.shift()!;output.push(next);position=point(next,position)}
-  const total=(route:Stop[])=>{
-    let last=origin
-    return route.reduce((sum,stop)=>{const dist=km(last,stop);last=point(stop,last);return sum+(Number.isFinite(dist)?dist:0)},0)
-  }
-  for(let i=0;i<output.length-1;i++)for(let j=i+1;j<output.length;j++){
-    const candidate=[...output.slice(0,i),...output.slice(i,j+1).reverse(),...output.slice(j+1)]
-    if(total(candidate)+0.001<total(output))output.splice(0,output.length,...candidate)
-  }
-  return output
-}
 export function RiderDashboard({account,shop}:{account:Account;shop:Shop}){
   const [route,setRoute]=useState<{origin:Point;orders:Stop[];summary:{completed:number;cash:number;active:number}}|null>(null)
   const [rows,setRows]=useState<OrderRow[]>([]),[error,setError]=useState(''),[ok,setOk]=useState('')
   const [opening,setOpening]=useState<string|null>(null),[busy,setBusy]=useState(false)
+  const [suggestion,setSuggestion]=useState<{ids:string[];seconds:number}|null>(null)
   const [cursor,setCursor]=useState<string|null>(null),[loadingHistory,setLoadingHistory]=useState(false)
   const load=async()=>{
     setError('')
     try{
       const [active,history]=await Promise.all([api<NonNullable<typeof route>>('/rider/route'),api<{orders:OrderRow[];next:string|null}>('/orders')])
-      setRoute(active);setRows(history.orders);setCursor(history.next)
+      setRoute(active);setRows(history.orders);setCursor(history.next);setSuggestion(null)
     }
     catch(e){setError(message(e))}
   }
@@ -45,7 +25,12 @@ export function RiderDashboard({account,shop}:{account:Account;shop:Shop}){
   async function save(stops:Stop[]){
     if(!route)return
     setBusy(true);setError('');setOk('')
-    try{await send('/rider/route',{orders:stops.map(o=>o.id)},'PUT');setRoute({...route,orders:stops});setOk('Route order saved.')}
+    try{await send('/rider/route',{orders:stops.map(o=>o.id)},'PUT');setRoute({...route,orders:stops});setSuggestion(null);setOk('Route order saved.')}
+    catch(e){setError(message(e))}finally{setBusy(false)}
+  }
+  async function suggest(){
+    setBusy(true);setError('');setOk('');setSuggestion(null)
+    try{setSuggestion(await send<{ids:string[];seconds:number}>('/rider/route/suggest'))}
     catch(e){setError(message(e))}finally{setBusy(false)}
   }
   const shift=(index:number,delta:number)=>{
@@ -68,8 +53,17 @@ export function RiderDashboard({account,shop}:{account:Account;shop:Shop}){
     <div className="metric-grid rider-metrics"><div className="metric metric-green"><Truck size={20}/><span>Active stops</span><strong>{route?.summary.active??0}</strong></div>
       <div className="metric metric-yellow"><PackageCheck size={20}/><span>Completed today</span><strong>{route?.summary.completed??0}</strong></div>
       <div className="metric metric-blue"><Wallet size={20}/><span>Cash to hand over</span><strong>{rupee(route?.summary.cash??0)}</strong></div></div>
-    <Heading title="Route stops" detail="Local route suggestions use straight-line distance. Confirm road navigation before departure."
-      action={route&&route.orders.length>1?<button className="button secondary" disabled={busy} onClick={()=>route&&void save(optimize(route.origin,route.orders))}><Route size={17}/> Suggest stop order</button>:undefined}/>
+    <Heading title="Route stops" detail="Suggest a route by road travel time, or arrange your stops manually."
+      action={route&&route.orders.length>1&&route.orders.length<=12?<button className="button secondary" disabled={busy} onClick={()=>void suggest()}><Route size={17}/> Suggest stop order</button>:undefined}/>
+    {suggestion&&route&&<div className="panel padded stack">
+      <strong>Suggested driving order · {Math.max(1,Math.round(suggestion.seconds/60))} min</strong>
+      <p>{suggestion.ids.map(displayOrder).join(' → ')}</p>
+      <small><a href="https://www.geoapify.com/" target="_blank" rel="noreferrer">Geoapify</a> · © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap contributors</a></small>
+      <button className="button secondary align-start" disabled={busy} onClick={()=>{
+        const stops=suggestion.ids.flatMap(id=>route.orders.filter(stop=>stop.id===id))
+        if(stops.length===route.orders.length)void save(stops)
+      }}>Save suggested order</button>
+    </div>}
     {!route?.orders.length?<div className="panel"><Empty title="No active stops" detail="Ready orders assigned by the owner will appear here."/></div>:<div className="stop-list">
       {route.orders.map((stop,index)=><article className="panel padded route-stop" key={stop.id}><div className="stop-number">{index+1}</div>
         <div className="stop-address"><b>{displayOrder(stop.id)}</b><small><MapPin size={14}/> {stop.address.line1}, {stop.address.locality}</small><small>{stop.address.landmark}</small></div>

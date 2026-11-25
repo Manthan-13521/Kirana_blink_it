@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { queuePush } from './push'
 import { all,audit,authorizeOrder,availableSlot,configuredSlot,digest,errorMap,I,id,json,now,one,order,parseLines,Problem,publicOrderFields,role,S,services,shop,shopDayStart,slots,statement,localhost } from './shared'
 import type { Address, Ctx, Env, Order, Product } from './shared'
 
@@ -161,18 +162,21 @@ orders.post('/orders/:id/state',async c=>{
   if(dismiss&&row.payment_status==='paid'&&!localhost(c)) throw new Problem(503,'Refund provider is not configured.')
   const reason=S(data.reason??'','reason',280,false)
   const payment=closeCash?'cash_collected':dismiss&&row.payment_status!=='paid'?'void':row.payment_status
-  const update=statement(db,`UPDATE orders SET status=?,payment_status=?,stocked=?,slot_retained=?,updated_at=?
-    WHERE id=? AND status=? AND payment_status=? AND (?!='rider' OR assigned_to=?)`,next,payment,dismiss?0:row.stocked,dismiss?0:row.slot_retained,time,row.id,row.status,row.payment_status,account.role,account.id)
-  const assertions=[
-    statement(db,`UPDATE order_events SET note=? WHERE id=(SELECT id FROM order_events WHERE order_id=? ORDER BY id DESC LIMIT 1) AND changes()=1`,reason,row.id),
-  ]
+  const paymentChanged=payment!==row.payment_status
+  const update=statement(db,`UPDATE orders SET status=?,updated_at=?
+    ${paymentChanged?',payment_status=?':''}${dismiss?',stocked=0,slot_retained=0':''}
+    WHERE id=? AND status=? AND payment_status=? AND (?!='rider' OR assigned_to=?)`,
+    next,time,...(paymentChanged?[payment]:[]),row.id,row.status,row.payment_status,account.role,account.id)
+  const assertions:D1PreparedStatement[]=[]
   if(dismiss&&row.payment_status==='paid') {
     assertions.push(statement(db,`INSERT INTO refunds(id,order_id,amount,actor,created_at)
       SELECT ?,id,total-COALESCE((SELECT SUM(amount) FROM refunds WHERE order_id=orders.id),0),?,?
       FROM orders WHERE id=? AND status=? AND payment_status='paid' AND changes()=1`,id(),account.id,time,row.id,next))
   }
+  if(reason)assertions.push(statement(db,`UPDATE order_events SET note=? WHERE id=(SELECT id FROM order_events WHERE order_id=? ORDER BY id DESC LIMIT 1) AND changes()=1`,reason,row.id))
   const result=await db.batch([update,...assertions])
   if(!result[0].meta.changes) throw new Problem(409,'This order changed. Refresh and try again.')
+  queuePush(c,row.account_id,next)
   return c.json({ok:true})
 })
 
@@ -254,6 +258,7 @@ orders.post('/admin/cases/:id',async c=>{
       audit(db,account.id,'case.cancel',caseId,response),
     ])
     if(!result[0].meta.changes||!result[1].meta.changes) throw new Problem(409,'The order or request changed.')
+    queuePush(c,row.account_id,'cancelled')
     return c.json({ok:true})
   }
   if(amount&&!['completed','failed'].includes(row.status)) throw new Problem(409,'Complete fulfillment or approve cancellation before recording a cash or online refund.')

@@ -4,6 +4,7 @@ import { api,message,pack,rupee} from './lib'
 import type { Account,CartLine,Category,Product,Shop } from './lib'
 import { Empty,ErrorText,Heading,Sheet,TextArrow } from './ui'
 import { Cart } from './checkout'
+import { InstallStore } from './install'
 
 const shapes=['#e6eddb','#f1e5d3','#f9e7be','#f1e2d9','#e2e9e2']
 function photo(product:Product){
@@ -117,7 +118,7 @@ export function Storefront({shop,account,query,setQuery,cart,setCart,cartOpen,st
           finally{if(!request.signal.aborted)setLoadingMore(false)}
         }}>{loadingMore?'Loading…':'Load more products'}</button>}
       </section>
-      <footer className="shop-footer"><strong>{shop.name}</strong><p>{shop.address} · <a href={'tel:'+shop.phone}>{shop.phone}</a></p><p><Clock3 size={14}/> Open {shop.open_hour}:00–{shop.close_hour}:00 daily</p><small>{shop.policy}</small></footer>
+      <footer className="shop-footer"><strong>{shop.name}</strong><p>{shop.address} · <a href={'tel:'+shop.phone}>{shop.phone}</a></p><p><Clock3 size={14}/> Open {shop.open_hour}:00–{shop.close_hour}:00 daily</p><small>{shop.policy}</small><InstallStore/></footer>
     </main>
     {count>0&&<button className="mobile-cart" onClick={()=>openCart(true)}><ShoppingBasket size={21}/><span>{count} {count===1?'item':'items'} · {rupee(total)}</span><b>View basket <ArrowRight size={17}/></b></button>}
     {selected&&<Sheet title={selected.name} onClose={()=>setSelected(null)}>

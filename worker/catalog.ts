@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
-import { all,audit,I,id,json,now,obj,one,Problem,role,S,statement,localhost } from './shared'
+import { jpegMime,mediaFileId,validMedia,webpMime } from './media-format'
+import { all,audit,I,id,json,now,obj,one,Problem,role,S,statement } from './shared'
 import type { Env, Product } from './shared'
 
 export const catalog=new Hono<Env>()
@@ -144,40 +145,40 @@ catalog.post('/admin/categories',async c=>{
 
 catalog.post('/admin/products/:id/image',async c=>{
   const actor=role(c,'owner','staff'), db=c.env.DB, media=c.env.MEDIA
-  if(!localhost(c)) throw new Problem(503,'The production image publisher is not configured.')
   const productId=c.req.param('id')
   const product=await one<{image:string|null}>(db,'SELECT image FROM products WHERE id=?',productId)
   if(!product) throw new Problem(404,'Product not found.')
-  if(c.req.header('content-type')!=='image/webp') throw new Problem(400,'Use a WebP image.')
+  const mime=c.req.header('content-type')??''
+  if(mime!==webpMime&&mime!==jpegMime)throw new Problem(400,'Use a WebP or JPEG image.')
   const data=await c.req.arrayBuffer()
-  const view=new DataView(data)
-  if(data.byteLength<24||data.byteLength>32768||view.getUint32(0)!==0x52494646||view.getUint32(8)!==0x57454250||view.getUint32(4,true)+8!==data.byteLength) throw new Problem(400,'Invalid or oversized WebP image.')
-  const key=id(), imageUrl='/media/'+key, time=now()
-  await statement(media,'INSERT INTO media(id,payload,size,created_at,expires_at) VALUES(?,?,?,?,?)',key,data,data.byteLength,time,time+172800).run()
+  if(!validMedia(data,mime))throw new Problem(400,'Use a valid image up to 512 pixels and 32 KiB.')
+  const key=id(),imageUrl='/media/'+key+(mime===jpegMime?'.jpg':''),time=now()
+  await statement(media,'INSERT INTO media(id,payload,size,created_at,expires_at,mime) VALUES(?,?,?,?,?,?)',
+    key,data,data.byteLength,time,time+172800,mime).run()
   const result=await db.batch([
     statement(db,'UPDATE products SET image=?,updated_at=? WHERE id=? AND image IS ?',imageUrl,time,productId,product.image),
     statement(db,`INSERT INTO media_jobs(id,product_id,action,status,previous_url,image_url,created_at)
       SELECT ?,?,'publish','published',?,?,? WHERE changes()=1`,id(),productId,product.image,imageUrl,time),
-    audit(db,actor.id,'media.publish',productId,imageUrl),
+    statement(db,"INSERT INTO audit(actor,action,subject,detail,created_at) SELECT ?,'media.publish',?,?,? WHERE changes()=1",actor.id,productId,imageUrl,time),
   ])
   if(!result[0].meta.changes) throw new Problem(409,'The image changed. Refresh before replacing it.')
   await statement(media,'UPDATE media SET expires_at=NULL WHERE id=?',key).run()
-  if(product.image?.startsWith('/media/')) await statement(media,'UPDATE media SET expires_at=? WHERE id=?',time+172800,product.image.slice(7)).run()
+  if(product.image?.startsWith('/media/')) await statement(media,'UPDATE media SET expires_at=? WHERE id=?',time+172800,mediaFileId(product.image)).run()
   return c.json({image:imageUrl,status:'published'})
 })
 catalog.delete('/admin/products/:id/image',async c=>{
   const actor=role(c,'owner','staff'), db=c.env.DB
-  if(!localhost(c)) throw new Problem(503,'The production image publisher is not configured.')
   const productId=c.req.param('id'), time=now()
   const p=await one<{image:string|null}>(db,'SELECT image FROM products WHERE id=?',productId)
   if(!p) throw new Problem(404,'Product not found.')
+  if(!p.image)return c.json({ok:true})
   const result=await db.batch([
     statement(db,'UPDATE products SET image=NULL,updated_at=? WHERE id=? AND image IS ?',time,productId,p.image),
     statement(db,`INSERT INTO media_jobs(id,product_id,action,status,previous_url,created_at)
       SELECT ?,?,'remove','published',?,? WHERE changes()=1`,id(),productId,p.image,time),
-    audit(db,actor.id,'media.remove',productId),
+    statement(db,"INSERT INTO audit(actor,action,subject,created_at) SELECT ?,'media.remove',?,? WHERE changes()=1",actor.id,productId,time),
   ])
   if(!result[0].meta.changes) throw new Problem(409,'The image changed.')
-  if(p.image?.startsWith('/media/')) await statement(c.env.MEDIA,'UPDATE media SET expires_at=? WHERE id=?',time+172800,p.image.slice(7)).run()
+  if(p.image?.startsWith('/media/')) await statement(c.env.MEDIA,'UPDATE media SET expires_at=? WHERE id=?',time+172800,mediaFileId(p.image)).run()
   return c.json({ok:true})
 })

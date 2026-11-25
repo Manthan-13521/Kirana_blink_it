@@ -122,7 +122,7 @@ export function readCsv(text:string){
   if(!keys?.length||!values.length)throw new Error('The CSV is empty.')
   return values.map(r=>Object.fromEntries(keys.map((k,i)=>[k,r[i]??''])))
 }
-export async function webp(input:File){
+export async function productImage(input:File){
   if(input.size>10*1024*1024||!['image/jpeg','image/png','image/webp','image/avif'].includes(input.type)) throw new Error('Choose a JPEG, PNG, AVIF or WebP image under 10 MB.')
   const image=await createImageBitmap(input)
   try {
@@ -133,7 +133,11 @@ export async function webp(input:File){
       const ctx=canvas.getContext('2d');if(!ctx)throw new Error('Image processing is unavailable.')
       ctx.drawImage(image,0,0,canvas.width,canvas.height)
       const blob=await new Promise<Blob|null>(resolve=>canvas.toBlob(resolve,'image/webp',0.8))
-      if(blob&&blob.type==='image/webp'&&blob.size<=32768) return blob
+      if(blob?.type==='image/webp'&&blob.size<=32768)return blob
+      if(blob?.type!=='image/webp'){
+        const jpeg=await new Promise<Blob|null>(resolve=>canvas.toBlob(resolve,'image/jpeg',0.8))
+        if(jpeg?.type==='image/jpeg'&&jpeg.size<=32768)return jpeg
+      }
     }
     throw new Error('The image could not be compressed below 32 KiB.')
   } finally {image.close()}

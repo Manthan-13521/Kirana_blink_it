@@ -55,8 +55,9 @@ localRoutes.post('/orders/:id/test-payment',async c=>{
   }
   const time=now()
   const success=result==='paid'&&row.created_at>=time-900
-  const changed=await statement(db,`UPDATE orders SET status=?,payment_status=?,stocked=?,slot_retained=?,updated_at=?
-    WHERE id=? AND status='awaiting_payment'`,success?'placed':'cancelled',success?'paid':'void',Number(success),Number(success),time,row.id).run()
+  const changed=await statement(db,`UPDATE orders SET status=?,payment_status=?,updated_at=?
+    ${success?'':',stocked=0,slot_retained=0'} WHERE id=? AND status='awaiting_payment'`,
+    success?'placed':'cancelled',success?'paid':'void',time,row.id).run()
   if(!changed.meta.changes){
     const current=await order(db,row.id)
     if(replay(current))return c.json({ok:true,status:current.status,replayed:true})

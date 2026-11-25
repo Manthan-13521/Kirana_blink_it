@@ -3,6 +3,11 @@ import { deleteCookie,getCookie } from 'hono/cookie'
 import { bodyLimit } from 'hono/body-limit'
 import { catalog } from './catalog'
 import { orders } from './orders'
+import { routing } from './routing'
+import { push } from './push'
+import { capacity } from './capacity'
+import { razorpay } from './razorpay'
+import { jpegMime,mediaFileId,webpMime } from './media-format'
 import { googleAuth } from './google-auth'
 import { all,audit,coordinate,digest,errorMap,I,id,json,localhost,now,one,parseLines,Problem,role,S,services,shop,statement,token } from './shared'
 import type { Account,Address,Env } from './shared'
@@ -29,7 +34,7 @@ export function application(localRoutes?:Hono<Env>) {
   api.use('*',async(c,next)=>{
     c.header('Cache-Control','no-store')
     c.set('localEntry',Boolean(localRoutes))
-    if(!['GET','HEAD','OPTIONS'].includes(c.req.method)){
+    if(!['GET','HEAD','OPTIONS'].includes(c.req.method)&&c.req.path!=='/api/webhooks/razorpay'){
       const origin=c.req.header('origin')
       if(origin!==new URL(c.req.url).origin||c.req.header('sec-fetch-site')==='cross-site') throw new Problem(403,'Request origin is not permitted.')
     }
@@ -214,12 +219,31 @@ export function application(localRoutes?:Hono<Env>) {
   else api.route('/',googleAuth)
   api.route('/',catalog)
   api.route('/',orders)
+  api.route('/',routing)
+  api.route('/',push)
+  api.route('/',capacity)
+  api.route('/',razorpay)
   app.route('/api',api)
   app.get('/media/:id',async c=>{
-    if(!/^[a-f0-9-]{36}$/.test(c.req.param('id'))) return c.notFound()
-    const row=await one<{payload:number[]|ArrayBuffer}>(c.env.MEDIA,'SELECT payload FROM media WHERE id=?',c.req.param('id'))
+    const file=c.req.param('id'),jpeg=file.endsWith('.jpg'),mime=jpeg?jpegMime:webpMime
+    if(!/^[a-f0-9-]{36}(?:\.jpg)?$/.test(file))return c.notFound()
+    const asset=c.env.MEDIA_STATIC_ORIGIN
+    if(asset){
+      try{
+        const response=await fetch(asset+'/media/'+file+(jpeg?'':'.webp'),{
+          signal:AbortSignal.timeout(1800),redirect:'error',
+        })
+        if(response.ok&&response.headers.get('Content-Type')?.startsWith(mime)){
+          return new Response(response.body,{headers:{
+            'Content-Type':mime,'Cache-Control':'public, max-age=86400, immutable','X-Content-Type-Options':'nosniff',
+          }})
+        }
+        await response.body?.cancel()
+      }catch{/* Newly uploaded images remain available from the media binding. */}
+    }
+    const row=await one<{payload:number[]|ArrayBuffer}>(c.env.MEDIA,'SELECT payload FROM media WHERE id=? AND mime=?',mediaFileId('/media/'+file),mime)
     if(!row) return c.notFound()
-    return new Response(row.payload instanceof ArrayBuffer?row.payload:new Uint8Array(row.payload),{headers:{'Content-Type':'image/webp','Cache-Control':'public, max-age=86400, immutable','X-Content-Type-Options':'nosniff'}})
+    return new Response(row.payload instanceof ArrayBuffer?row.payload:new Uint8Array(row.payload),{headers:{'Content-Type':mime,'Cache-Control':'public, max-age=86400, immutable','X-Content-Type-Options':'nosniff'}})
   })
   app.notFound(c=>c.json({error:'Not found.'},404))
   return {
@@ -239,10 +263,10 @@ async function cleanup(env:Env['Bindings'],expireTestPayments:boolean){
     statement(db,'DELETE FROM invites WHERE hash IN (SELECT hash FROM invites WHERE expires_at<? LIMIT 200)',time),
     statement(db,'DELETE FROM notices WHERE id IN (SELECT id FROM notices WHERE created_at<? LIMIT 200)',time-2*DAY),
   ])
-  const expired=await all<{id:string}>(env.MEDIA,'SELECT id FROM media WHERE expires_at<? LIMIT 25',time)
+  const expired=await all<{id:string;mime:string}>(env.MEDIA,'SELECT id,mime FROM media WHERE expires_at<? LIMIT 25',time)
   if(!expired.length)return
-  const used=await all<{image:string}>(db,`SELECT image FROM products WHERE image IN (${expired.map(()=>'?').join(',')})`,...expired.map(r=>'/media/'+r.id))
-  const retained=new Set(used.map(r=>r.image.slice(7)))
+  const used=await all<{image:string}>(db,`SELECT image FROM products WHERE image IN (${expired.map(()=>'?').join(',')})`,...expired.map(r=>'/media/'+r.id+(r.mime===jpegMime?'.jpg':'')))
+  const retained=new Set(used.map(r=>mediaFileId(r.image)))
   const deletions=expired.filter(r=>!retained.has(r.id)).map(r=>statement(env.MEDIA,'DELETE FROM media WHERE id=? AND expires_at<?',r.id,time))
   if(deletions.length) await env.MEDIA.batch(deletions)
 }

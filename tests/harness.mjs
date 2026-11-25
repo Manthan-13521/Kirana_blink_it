@@ -17,7 +17,7 @@ async function allocate(){
   await new Promise(resolve=>server.close(resolve))
   return port
 }
-export async function harness(seed,{entry='index',mode}={}){
+export async function harness(seed,{entry='index',mode,vars={}}={}){
   const workspace=await mkdtemp(join(tmpdir(),'kirana-local-test-'))
   const state=join(workspace,'state')
   const port=await allocate()
@@ -42,10 +42,11 @@ export async function harness(seed,{entry='index',mode}={}){
       ...['wrangler.local.jsonc','package.json','dist','worker','migrations','media-migrations'].map(file=>cp(file,join(workspace,file),{recursive:true})),
       symlink(resolve('node_modules'),join(workspace,'node_modules'),process.platform==='win32'?'junction':'dir'),
     ])
-    if(entry!=='index'||mode){
+    if(entry!=='index'||mode||Object.keys(vars).length){
       const configPath=join(workspace,'wrangler.local.jsonc')
       const parsed=JSON.parse(await readFile(configPath,'utf8'))
       parsed.main='worker/'+entry+'.ts'
+      Object.assign(parsed.vars,vars)
       if(mode)parsed.vars.APP_MODE=mode
       await writeFile(configPath,JSON.stringify(parsed))
     }

@@ -21,11 +21,11 @@ export function OwnerDashboard({account,shop,refreshShop}:{account:Account;shop:
     <aside className="dashboard-nav"><span className="sidebar-label">STORE WORKSPACE</span>{links.filter(item=>account.role==='owner'||!['team','setup'].includes(item.id)).map(({id,label,icon:Icon})=><button key={id} onClick={()=>change(id)} className={tab===id?'nav-current':''}><Icon size={17}/>{label}</button>)}</aside>
     <main className="dashboard-main">
       <ErrorText text={error}/>
-      {tab==='overview'&&<Overview name={account.name} navigate={change} revision={revision}/>}
+      {tab==='overview'&&<Overview name={account.name} navigate={change} revision={revision} owner={account.role==='owner'}/>}
       {tab==='orders'&&<AdminOrders open={setOrder} revision={revision}/>}
       {tab==='catalog'&&<AdminCatalog owner={account.role==='owner'}/>}
       {tab==='counter'&&<Counter accountId={account.id} open={setOrder}/>}
-      {tab==='reports'&&<Reports/>}
+      {tab==='reports'&&<Reports owner={account.role==='owner'}/>}
       {tab==='support'&&<Cases open={setOrder}/>}
       {tab==='setup'&&<Setup shop={shop} refresh={refreshShop}/>}
       {tab==='team'&&<Team/>}
@@ -34,10 +34,15 @@ export function OwnerDashboard({account,shop,refreshShop}:{account:Account;shop:
   </div>
 }
 
-function Overview({name,navigate,revision}:{name:string;navigate:(tab:Tab)=>void;revision:number}){
+function Overview({name,navigate,revision,owner}:{name:string;navigate:(tab:Tab)=>void;revision:number;owner:boolean}){
   const [summary,setSummary]=useState<Summary|null>(null),[error,setError]=useState('')
   useEffect(()=>{api<Summary>('/admin/summary').then(setSummary,e=>setError(message(e)))},[revision])
   const m=summary?.metrics
+  const [capacity,setCapacity]=useState<{name:string;used:number|null;limit:number;warning:boolean}[]|null>(null)
+  const refreshCapacity=async()=>{
+    try{setCapacity((await api<{measurements:NonNullable<typeof capacity>}>('/admin/capacity')).measurements)}
+    catch(e){setError(message(e))}
+  }
   return <div className="stack roomy">
     <div className="console-hero"><div><h1>Today at your store</h1><p>Welcome, {name}.</p></div><div className="actions"><button className="button light" onClick={()=>navigate('orders')}>Manage orders <ArrowRight size={17}/></button><button className="button light" onClick={()=>navigate('counter')}>New counter sale <ArrowRight size={17}/></button></div></div>
     <ErrorText text={error}/>
@@ -56,6 +61,14 @@ function Overview({name,navigate,revision}:{name:string;navigate:(tab:Tab)=>void
         <div className="summary-line"><span>Refunded today</span><strong>{summary?rupee(summary.refunds):'—'}</strong></div>
       </section>
     </div>
+    {owner&&<section className="panel padded stack">
+      <Heading title="Storage and usage" action={<button className="button secondary small" onClick={()=>void refreshCapacity()}>Check usage</button>}/>
+      {capacity?.map(item=><div key={item.name} className="summary-line">
+        <span>{item.name}</span><strong className={item.warning?'low-stock':''}>
+          {item.used===null?'Unavailable':`${item.used.toLocaleString('en-IN')} / ${item.limit.toLocaleString('en-IN')}`}
+        </strong>
+      </div>)}
+    </section>}
   </div>
 }
 function Metric({label,value,accent}:{label:string;value:string|number;accent:string}){
@@ -171,7 +184,7 @@ function Cases({open}:{open:(id:string)=>void}){
     </article>)}
   </section>
 }
-function Reports(){
+function Reports({owner}:{owner:boolean}){
   const [rows,setRows]=useState<Record<string,unknown>[]>([]),[days,setDays]=useState(7),[error,setError]=useState('')
   useEffect(()=>{api<typeof rows>('/admin/report?days='+days).then(setRows,e=>setError(message(e)))},[days])
   return <section className="stack"><Heading title="Sales reports" detail="Completed orders by day, channel and payment." action={<button className="button secondary" onClick={()=>downloadCsv(rows,'kirana-sales.csv')} disabled={!rows.length}><FileDown size={16}/> Export sales</button>}/>
@@ -179,6 +192,36 @@ function Reports(){
     <ErrorText text={error}/><div className="panel table-scroll">{!rows.length?<Empty title="No completed sales"/>:<table><thead><tr><th>Date</th><th>Channel</th><th>Fulfillment</th><th>Payment</th><th>Orders</th><th>Gross</th></tr></thead><tbody>
       {rows.map((r,i)=><tr key={i}><td>{String(r.day)}</td><td>{pretty(String(r.channel))}</td><td>{pretty(String(r.fulfillment))}</td><td>{pretty(String(r.payment_method))}</td><td>{String(r.order_count)}</td><td>{rupee(Number(r.gross))}</td></tr>)}
     </tbody></table>}</div>
+    {owner&&<TestPayments/>}
+  </section>
+}
+type TestAttempt={reference:string;url:string|null;status:string;amount:number}
+function TestPayments(){
+  const [attempts,setAttempts]=useState<TestAttempt[]>([]),[enabled,setEnabled]=useState(false)
+  const [error,setError]=useState(''),[busy,setBusy]=useState(false)
+  const load=async()=>{
+    const data=await api<{enabled:boolean;attempts:TestAttempt[]}>('/admin/payments/test')
+    setAttempts(data.attempts);setEnabled(data.enabled)
+  }
+  useEffect(()=>{void load().catch(e=>setError(message(e)))},[])
+  const action=async(operation:()=>Promise<unknown>)=>{
+    setBusy(true);setError('')
+    try{await operation();await load()}catch(e){setError(message(e));await load().catch(()=>{})}finally{setBusy(false)}
+  }
+  if(!enabled)return null
+  const pending=attempts.find(attempt=>attempt.status==='creating')
+  return <section className="panel padded stack">
+    <Heading title="Razorpay test payments" detail="Run a ₹1 test transaction without creating a customer order."/>
+    <ErrorText text={error}/>
+    <div className="actions">
+      <button className="button primary" disabled={busy} onClick={()=>void action(()=>send('/admin/payments/test',{reference:pending?.reference??crypto.randomUUID()}))}>{pending?'Recover test link':'Create test link'}</button>
+      <button className="button secondary" disabled={busy} onClick={()=>void action(load)}>Refresh status</button>
+    </div>
+    {attempts.map(attempt=><div className="summary-line" key={attempt.reference}>
+      <span>{rupee(attempt.amount)} · {pretty(attempt.status)}</span>
+      {attempt.url&&attempt.status==='open'&&<a href={attempt.url} target="_blank" rel="noopener noreferrer">Open Razorpay test checkout</a>}
+      {['paid','refunding'].includes(attempt.status)&&<button className="button secondary small" disabled={busy} onClick={()=>void action(()=>send('/admin/payments/test/'+attempt.reference+'/refund'))}>Refund test payment</button>}
+    </div>)}
   </section>
 }
 

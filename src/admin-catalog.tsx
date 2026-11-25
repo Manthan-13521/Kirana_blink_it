@@ -1,7 +1,7 @@
 import { useEffect,useState } from 'react'
 import type { FormEvent } from 'react'
 import { Archive,Boxes,FileDown,ImagePlus,PackagePlus,Plus,Search,Trash2,Upload } from 'lucide-react'
-import { api,downloadCsv,message,pack,readCsv,rupee,send,webp } from './lib'
+import { api,downloadCsv,message,pack,readCsv,rupee,send,productImage } from './lib'
 import type { Category,Product } from './lib'
 import { Empty,ErrorText,Heading,Sheet,Success } from './ui'
 
@@ -67,7 +67,7 @@ function ProductForm({product,categories,close,saved}:{product:Draft;categories:
   const submit=async(e:FormEvent)=>{
     e.preventDefault();setBusy(true);setError('')
     try{
-      const image=file?await webp(file):null
+      const image=file?await productImage(file):null
       let productId=value.id
       const fields={...value,mrp:value.mrp||value.price}
       if(productId)await send('/admin/products/'+productId,fields,'PUT')
@@ -75,7 +75,7 @@ function ProductForm({product,categories,close,saved}:{product:Draft;categories:
         const created=await send<{id:string}>('/admin/products',fields)
         productId=created.id;setValue(d=>({...d,id:created.id}))
       }
-      if(image)await api('/admin/products/'+productId+'/image',{method:'POST',headers:{'Content-Type':'image/webp'},body:image})
+      if(image)await api('/admin/products/'+productId+'/image',{method:'POST',headers:{'Content-Type':image.type},body:image})
       else if(remove)await api('/admin/products/'+productId+'/image',{method:'DELETE'})
       saved()
     }catch(e){setError(message(e))}finally{setBusy(false)}

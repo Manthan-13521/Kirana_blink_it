@@ -5,6 +5,7 @@ import { AddressForm,OrderList,OrderView } from './checkout'
 import { api,message,pretty,rupee,send } from './lib'
 import type { Account,Address,CartLine,OrderDetail,Product,Shop } from './lib'
 import { Storefront } from './shop'
+import { InstallStore } from './install'
 import { Empty,ErrorText,Mark,Sheet,Success } from './ui'
 import './style.css'
 const Owner=lazy(()=>import('./admin').then(m=>({default:m.OwnerDashboard})))
@@ -92,7 +93,19 @@ function App(){
     checkoutIntent.current=false
   }
   async function logOut(){
-    try{await send('/auth/logout');cartChanged.current=false;setAccount(null);setCart(readCart(cartKey())??[]);setOrder(null);setModal(null);go('shop')}
+    try{
+      // Remove this device's account binding before disposing of the session.
+      if(account?.role==='customer'&&!local&&'serviceWorker' in navigator){
+        try{
+          const registration=await navigator.serviceWorker.getRegistration()
+          const subscription=await registration?.pushManager?.getSubscription()
+          if(subscription){
+            await send('/notices/push',{endpoint:subscription.endpoint},'DELETE')
+            await subscription.unsubscribe()
+          }
+        }catch{/* Signing out must remain available when push services are unavailable. */}
+      }
+      await send('/auth/logout');cartChanged.current=false;setAccount(null);setCart(readCart(cartKey())??[]);setOrder(null);setModal(null);go('shop')}
     catch(e){setError(message(e))}
   }
   const reorder=async(items:OrderDetail['items'])=>{
@@ -135,7 +148,7 @@ function App(){
     {modal==='profile'&&account&&<Profile account={account} setAccount={setAccount} local={local} close={()=>setModal(null)} logOut={()=>void logOut()} orders={()=>setModal('orders')} addresses={()=>setModal('location')} switchRole={()=>signIn(currentRole)}/>}
     {modal==='orders'&&account&&<Sheet title="Order history" onClose={()=>setModal(null)} wide><OrderList open={id=>{setModal(null);setOrder(id)}}/></Sheet>}
     {modal==='location'&&<Location shop={shop} account={account} onClose={()=>setModal(null)} signIn={()=>signIn('customer')}/>}
-    {modal==='notices'&&account&&<Notices close={()=>setModal(null)} open={id=>{setModal(null);setOrder(id)}}/>}
+    {modal==='notices'&&account&&<Notices customer={account?.role==='customer'} local={local} close={()=>setModal(null)} open={id=>{setModal(null);setOrder(id)}}/>}
     {order&&account&&<OrderView orderId={order} onClose={()=>setOrder(null)} account={account} shop={shop} reorder={account.role==='customer'?reorder:undefined}/>}
   </div>
 }
@@ -177,6 +190,7 @@ function Profile({account,setAccount,close,logOut,local,orders,addresses,switchR
     <form className="stack" onSubmit={async e=>{e.preventDefault();setError('');setOk('')
       try{setAccount(await send<Account>('/me',Object.fromEntries(new FormData(e.currentTarget)),'PUT'));setOk('Profile saved.')}catch(err){setError(message(err))}
     }}><label>Name<input name="name" defaultValue={account.name} required maxLength={80}/></label><label>Phone<input name="phone" type="tel" defaultValue={account.phone} maxLength={24}/></label><button className="button primary align-start">Save profile</button></form>
+    <InstallStore/>
     <div className="actions">{account.role==='customer'&&<><button className="button secondary" onClick={orders}>Order history</button><button className="button secondary" onClick={addresses}>Saved addresses</button></>}{local&&<button className="button secondary" onClick={switchRole}>Switch demo account</button>}<button className="button secondary" onClick={logOut}>Sign out</button></div>
   </div></Sheet>
 }
@@ -194,21 +208,49 @@ function Location({shop,account,onClose,signIn}:{shop:Shop;account:Account|null;
     </>:<button className="button primary" onClick={signIn}>Sign in to save an address</button>}
   </div></Sheet>
 }
-function Notices({close,open}:{close:()=>void;open:(id:string)=>void}){
+function Notices({customer,local,close,open}:{customer:boolean;local:boolean;close:()=>void;open:(id:string)=>void}){
   const [rows,setRows]=useState<{id:number;order_id:string;message:string;read_at:number|null}[]>([]),[enabled,setEnabled]=useState(false),[error,setError]=useState('')
-  useEffect(()=>{api<{notices:typeof rows;enabled:boolean}>('/notices').then(x=>{setRows(x.notices);setEnabled(x.enabled)},e=>setError(message(e)))},[])
-  return <Sheet title="Notifications" onClose={close}><div className="stack"><ErrorText text={error}/>
-    <label className="check-label"><input type="checkbox" checked={enabled} onChange={async e=>{
-      const value=e.target.checked
-      try{
-        if(value&&'Notification' in window){
-          const permission=await Notification.requestPermission()
-          if(permission!=='granted')throw new Error('Browser notifications were not enabled.')
-          await navigator.serviceWorker?.ready.then(reg=>reg.showNotification('Kirana test notification',{body:'Local notifications are enabled.'}))
+  const [key,setKey]=useState<string|null>(null),[busy,setBusy]=useState(false)
+  useEffect(()=>{
+    api<{notices:typeof rows;enabled:boolean}>('/notices').then(x=>{
+      setRows(x.notices)
+      if(local)setEnabled(x.enabled)
+    },e=>setError(message(e)))
+    if(!local&&customer&&'serviceWorker' in navigator){
+      Promise.all([api<{publicKey:string|null}>('/notices/push'),navigator.serviceWorker.getRegistration()])
+        .then(async([config,registration])=>{
+          setKey(config.publicKey)
+          if(registration?.pushManager)setEnabled(Boolean(await registration.pushManager.getSubscription()))
+        }).catch(e=>setError(message(e)))
+    }
+  },[local,customer])
+  async function setPush(value:boolean){
+    setBusy(true);setError('')
+    try{
+      const registration=await navigator.serviceWorker.getRegistration()
+      if(!registration||!('Notification' in window))throw new Error('Install the store app to use browser notifications on this device.')
+      if(value&&await Notification.requestPermission()!=='granted')throw new Error('Browser notifications were not enabled.')
+      if(local){
+        if(value)await registration.showNotification('Kirana test notification',{body:'Local notifications are enabled.'})
+        await send('/notices/preferences',{enabled:value},'PUT')
+      }else{
+        const existing=await registration.pushManager.getSubscription()
+        if(value&&key){
+          const base64=key.replaceAll('-','+').replaceAll('_','/')+'='.repeat((4-key.length%4)%4)
+          const applicationServerKey=Uint8Array.from(atob(base64),c=>c.charCodeAt(0))
+          const subscription=existing??await registration.pushManager.subscribe({userVisibleOnly:true,applicationServerKey})
+          try{await send('/notices/push',{endpoint:subscription.endpoint},'PUT')}
+          catch(error){if(!existing)await subscription.unsubscribe();throw error}
+        }else if(!value&&existing){
+          await send('/notices/push',{endpoint:existing.endpoint},'DELETE')
+          await existing.unsubscribe()
         }
-        await send('/notices/preferences',{enabled:value},'PUT');setEnabled(value)
-      }catch(e){setError(message(e))}
-    }}/> Enable local notification preview</label>
+      }
+      setEnabled(value)
+    }catch(e){setError(message(e))}finally{setBusy(false)}
+  }
+  return <Sheet title="Notifications" onClose={close}><div className="stack"><ErrorText text={error}/>
+    {(local||customer&&key)&&<label className="check-label"><input type="checkbox" disabled={busy} checked={enabled} onChange={e=>void setPush(e.target.checked)}/> {local?'Enable local notification preview':'Send order updates to this device'}</label>}
     {!rows.length?<Empty title="No notifications yet"/>:rows.map(r=><button type="button" className="order-row" key={r.id} onClick={()=>open(r.order_id)}>{r.message}<ArrowRight size={15}/></button>)}
     {!!rows.length&&<button className="button secondary" onClick={async()=>{try{await send('/notices/read');setRows(rows.map(r=>({...r,read_at:Date.now()})))}catch(e){setError(message(e))}}}>Mark all as read</button>}
   </div></Sheet>

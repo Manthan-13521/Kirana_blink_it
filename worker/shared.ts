@@ -7,6 +7,8 @@ export type Env = {
     DB: D1Database; MEDIA: D1Database; APP_MODE?: string; ASSETS?: Fetcher
     GOOGLE_CLIENT_ID?:string; GOOGLE_CLIENT_SECRET?:string; GOOGLE_ORIGIN?:string
     GOOGLE_OWNER_EMAILS?:string; GOOGLE_RIDER_EMAIL?:string
+    MEDIA_STATIC_ORIGIN?:string; GEOAPIFY_KEY?:string; VAPID_PUBLIC_KEY?:string; VAPID_PRIVATE_JWK?:string; VAPID_CONTACT?:string
+    RAZORPAY_KEY_ID?:string; RAZORPAY_KEY_SECRET?:string; RAZORPAY_WEBHOOK_SECRET?:string
   }
   Variables: { account: Account; localEntry: boolean }
 }
@@ -55,8 +57,15 @@ export type Order = {
   slot_retained: number; stocked: number; reconciled: number; created_at: number; updated_at: number
 }
 
+type ProblemStatus=400|401|403|404|409|413|422|429|503
 export class Problem extends Error {
-  constructor(public status: 400|401|403|404|409|413|422|503, message: string, public code?: string) { super(message) }
+  readonly status:ProblemStatus
+  readonly code?:string
+  constructor(status:ProblemStatus,message:string,code?:string){
+    super(message)
+    this.status=status
+    this.code=code
+  }
 }
 export const now = () => Math.floor(Date.now() / 1000)
 export const id = () => crypto.randomUUID()
@@ -176,6 +185,7 @@ export function authorizeOrder(account:Account,row:Order) {
 }
 export function errorMap(e: unknown) {
   const message=e instanceof Error?e.message:''
+  if (message.includes('media_limit')) return new Problem(429,'The store image limit was reached. Try again tomorrow or remove unused images.')
   if (message.includes('slot_full')) return new Problem(409,'That window just filled. Select another window or store pickup.','slot_full')
   if (message.includes('insufficient_stock')) return new Problem(409,'A product has insufficient stock. Review the basket.','stock')
   if (message.includes('catalog_changed')) return new Problem(409,'A price or quantity limit changed. Review the basket.','quote_changed')

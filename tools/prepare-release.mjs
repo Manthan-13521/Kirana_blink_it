@@ -21,6 +21,9 @@ if(googleOrigin!==undefined){
   assert.equal(url.protocol,'https:')
   assert.equal(url.origin,googleOrigin,'Google origin must be an HTTPS origin without a trailing slash.')
 }
+const staticMediaOrigin=config.staticMediaOrigin
+if(staticMediaOrigin!==undefined)assert.equal(staticMediaOrigin,'https://'+config.mediaProject+'.pages.dev',
+  'Use the dedicated Pages media hostname for static image delivery.')
 const data=config.store
 assert.ok(data&&typeof data==='object')
 const fields=Object.keys(template.store)
@@ -39,7 +42,7 @@ assert.deepEqual(await readdir(root),[],'The release directory must be empty.')
 await Promise.all([
   cp('dist',join(root,'pages','dist'),{recursive:true}),
   cp('deployment/pages/functions',join(root,'pages','functions'),{recursive:true}),
-  cp('worker',join(root,'worker','worker'),{recursive:true,filter:file=>!['index.ts','local-integrations.ts','qa.ts'].includes(file.split(/[\\/]/).at(-1))}),
+  cp('worker',join(root,'worker','worker'),{recursive:true,filter:file=>!['index.ts','local-integrations.ts','qa.ts','benchmark.ts'].includes(file.split(/[\\/]/).at(-1))}),
   cp('package.json',join(root,'worker','package.json')),
   cp('package-lock.json',join(root,'worker','package-lock.json')),
   cp('media-migrations',join(root,'worker','media-migrations'),{recursive:true}),
@@ -56,7 +59,7 @@ const configWriter=(file,value)=>writeFile(join(root,file),JSON.stringify(value,
 await Promise.all([
   writeFile(join(root,'worker','initialize-store.sql'),seed),
   configWriter('worker/wrangler.json',{name:workerName,main:'worker/production.ts',compatibility_date:'2026-10-01',workers_dev:false,
-    vars:{APP_MODE:mode,...(googleOrigin?{GOOGLE_ORIGIN:googleOrigin}:{})},preview_urls:false,
+    vars:{APP_MODE:mode,...(googleOrigin?{GOOGLE_ORIGIN:googleOrigin}:{}),...(staticMediaOrigin?{MEDIA_STATIC_ORIGIN:staticMediaOrigin}:{})},preview_urls:false,
     d1_databases:[{binding:'DB',database_id:ids[0],database_name:config.slug+'-orders',migrations_dir:'migrations'},{binding:'MEDIA',database_id:ids[1],database_name:config.slug+'-media',migrations_dir:'media-migrations'}],
     triggers:{crons:['*/10 * * * *']}}),
   configWriter('pages/wrangler.json',{name:config.frontendProject,pages_build_output_dir:'dist',compatibility_date:'2026-10-01',services:[{binding:'KIRANA_API',service:workerName}]}),
