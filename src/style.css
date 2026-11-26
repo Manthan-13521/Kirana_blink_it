@@ -154,7 +154,19 @@ muted,.muted{color:var(--muted);font-size:13px}
 .order-row{display:flex;align-items:center;justify-content:space-between;gap:9px;width:100%;padding:11px 11px;text-align:left;border:1px solid #e3e8de;border-radius:9px;background:#fff;color:var(--ink);font-size:13px}
 .order-row:hover{background:#f4f6f1}
 .order-row small,.order-banner small{display:block;margin-top:3px}
+.order-row>div:nth-child(2){min-width:0;text-align:right}
+.order-row .status{white-space:normal}
+.my-orders{padding:28px 0 40px;max-width:800px}
+.my-orders h1{font-size:clamp(1.65rem,4vw,2.15rem);margin:0}
+.my-orders .heading p{margin-top:5px}
 .order-banner{border-radius:11px;background:#f2f5ed;display:flex;justify-content:space-between;gap:7px;align-items:center;padding:11px}
+.order-banner .status{white-space:normal}
+.order-reference{overflow-wrap:anywhere}
+.order-item-main{display:flex;min-width:0;align-items:center;gap:9px}
+.order-item-main small{display:block;color:var(--muted);font-size:12px}
+.order-item-image{position:relative;display:grid;place-items:center;flex:none;width:42px;height:42px;background:#f0f4ec;color:#4c735a;border-radius:7px;overflow:hidden}
+.order-item-image img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#fff}
+.order-item>b{flex:none}
 .status{display:inline-flex;align-items:center;border-radius:24px;padding:5px 8px;background:#edf0e7;color:#435348;font-size:11px;font-weight:730;white-space:nowrap}
 .status-completed,.status-paid,.status-cash_collected,.status-approved{background:#e1f0df;color:#275736}
 .status-placed,.status-accepted,.status-packing,.status-ready,.status-out_for_delivery{background:#e3eee8;color:#2e5141}
@@ -164,6 +176,9 @@ muted,.muted{color:var(--muted);font-size:13px}
 .timeline li{display:flex;gap:8px;align-items:flex-start;font-size:13px}
 .timeline li svg{border-radius:50%;box-sizing:content-box;padding:3px;color:#2c6845;background:#e5f1e3;flex:none}
 .timeline small{display:block}
+.tracking-timeline li[aria-current=step]{padding:6px 8px;margin-left:-8px;background:#edf4ec;border-radius:8px}
+.tracking-timeline .tracking-upcoming{color:var(--muted)}
+.tracking-timeline .tracking-upcoming svg{background:#f2f4ef;color:#687568}
 .profile-card{display:flex;align-items:center;gap:10px}
 .profile-icon{display:grid;place-items:center;background:#edf2e8;border-radius:50%;width:47px;height:47px}
 .role-entry,.startup{padding:30px 0}

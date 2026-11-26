@@ -9,11 +9,11 @@ export type OrderRow={
   subtotal:number;fees:number;tax:number;total:number;slot_start:number|null;slot_end:number|null
   created_at:number;updated_at:number;assigned_to:string|null;route_rank:number;address_json?:string|null;reconciled:number;note:string
 }
-export type OrderItem={product_id:string;sku:string;name:string;unit:string;quantity:number;step:number;price:number;line_total:number;tax:number;tax_bps:number;hsn:string}
+export type OrderItem={product_id:string;sku:string;name:string;unit:string;quantity:number;step:number;price:number;line_total:number;tax:number;tax_bps:number;hsn:string;image:string|null}
 export type OrderCase={id:string;kind:string;status:string;reason:string;response:string;created_at:number;order_id:string;total:number;payment_status:string}
 export type OrderDetail=OrderRow&{
   address:Address|null;invoice:{name:string;address:string;phone:string;gstin:string;registered:number;buyer:string}|null
-  items:OrderItem[];events:{status:string;created_at:number;note:string}[];cases:OrderCase[];refunds:{amount:number;created_at:number}[];refundPending?:boolean;refundFailed?:boolean;paymentFailed?:boolean;canReconcilePayment?:boolean;liveRefunds?:{id:string;amount:number;status:string}[]
+  items:OrderItem[];events:{status:string;created_at:number;note:string}[];cases:OrderCase[];refunds:{amount:number;created_at:number}[];trackingVersion?:string;refundPending?:boolean;refundFailed?:boolean;paymentFailed?:boolean;canReconcilePayment?:boolean;liveRefunds?:{id:string;amount:number;status:string}[]
 }
 export class ApiError extends Error { constructor(public status:number,message:string,public code?:string){super(message)} }
 export async function api<T>(path:string,options?:RequestInit):Promise<T>{
@@ -54,6 +54,8 @@ const timeFormat=new Intl.DateTimeFormat('en-IN',{hour:'numeric',minute:'2-digit
 const dateFormat=new Intl.DateTimeFormat('en-IN',{weekday:'short',day:'numeric',month:'short',timeZone:'Asia/Kolkata'})
 export const date=(time:number)=>dateFormat.format(time*1000)
 export const clock=(time:number)=>timeFormat.format(time*1000)
+const timestampFormat=new Intl.DateTimeFormat('en-IN',{dateStyle:'medium',timeStyle:'short',timeZone:'Asia/Kolkata'})
+export const timestamp=(time:number)=>timestampFormat.format(time*1000)
 export const windowLabel=(start:number,end:number)=>`${date(start)} · ${clock(start)}–${clock(end)}`
 export const displayOrder=(value:string)=>'#'+value.slice(0,8).toUpperCase()
 export const message=(error:unknown)=>error instanceof Error?error.message:'Something went wrong.'
@@ -64,7 +66,7 @@ export function pack(unit:string,step:number){
 }
 export const dateInput=()=>new Date().toLocaleDateString('en-CA',{timeZone:'Asia/Kolkata'})
 
-export async function invoice(order:OrderDetail){
+export async function invoice(order:OrderDetail,local=false){
   if(!order.invoice) throw new Error('Invoice unavailable.')
   const {jsPDF}=await import('jspdf')
   const doc=new jsPDF()
@@ -73,15 +75,16 @@ export async function invoice(order:OrderDetail){
   doc.setFontSize(22);doc.text(name,14,20)
   doc.setFontSize(10);doc.text(address,14,29,{maxWidth:180})
   doc.text(phone+(gstin?' · GSTIN '+gstin:''),14,37)
-  doc.setFontSize(15);doc.text(registered?'Tax invoice (local demonstration)':'Order bill (local demonstration)',14,49)
+  doc.setFontSize(15);doc.text((registered?'Tax invoice':'Order bill')+(local?' (local demonstration)':''),14,49)
   doc.setFontSize(10);doc.text('Reference: '+order.id,14,59)
-  doc.text('Date: '+date(order.created_at)+'   Customer: '+buyer,14,66)
+  doc.text('Date: '+timestamp(order.created_at)+'   Customer: '+buyer,14,66)
   doc.text('Fulfillment: '+pretty(order.fulfillment)+'   Payment: '+pretty(order.payment_status),14,73)
   if(order.address) doc.text('Delivery: '+order.address.line1+', '+order.address.locality+', '+order.address.pin,14,80,{maxWidth:180})
   let y=92
   for(const row of order.items){
     if(y>260){doc.addPage();y=20}
-    const itemLabel=doc.splitTextToSize(row.name+' · '+pack(row.unit,row.quantity)+(row.hsn?' · HSN '+row.hsn:''),128)
+    const itemLabel=doc.splitTextToSize(row.name+' · '+pack(row.unit,row.step)+' × '+row.quantity/row.step+
+      ' · '+currency(row.price)+' per pack'+(row.hsn?' · HSN '+row.hsn:''),132)
     doc.text(itemLabel,14,y);doc.text(currency(row.line_total),196,y,{align:'right'})
     y+=Math.max(8,itemLabel.length*5+3)
   }

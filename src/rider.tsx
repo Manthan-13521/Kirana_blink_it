@@ -23,6 +23,25 @@ export function RiderDashboard({account,shop}:{account:Account;shop:Shop}){
     catch(e){setError(message(e))}
   }
   useEffect(()=>{void load()},[])
+  useEffect(()=>{
+    if(!route||opening||busy)return
+    const request=new AbortController()
+    const refresh=async()=>{
+      if(document.visibilityState!=='visible')return
+      try{
+        const updated=await api<NonNullable<typeof route>>('/rider/route',{signal:request.signal})
+        if(request.signal.aborted)return
+        const changed=updated.orders.length!==route.orders.length||
+          updated.orders.some((stop,index)=>stop.id!==route.orders[index]?.id||stop.status!==route.orders[index]?.status)
+        if(changed)setSuggestion(null)
+        setRoute(updated)
+      }catch{/* The manual refresh control can report connectivity errors. */}
+    }
+    const timer=setInterval(()=>void refresh(),45000)
+    const onVisible=()=>void refresh()
+    document.addEventListener('visibilitychange',onVisible)
+    return ()=>{clearInterval(timer);document.removeEventListener('visibilitychange',onVisible);request.abort()}
+  },[busy,opening,route])
   async function save(stops:Stop[]){
     if(!route)return
     setBusy(true);setError('');setOk('')

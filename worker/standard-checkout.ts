@@ -114,17 +114,21 @@ checkoutPayments.post('/orders/:id/payment/cancel',async c=>{
   return c.json({ok:true})
 })
 
-export async function applyCapturedPayment(db:D1Database,payment:Entity,mode:PaymentMode,time=now()){
+export async function applyCapturedPayment(db:D1Database,payment:Entity,mode:PaymentMode,time=now(),eventTime?:number){
   if(!identifier(payment.id,'pay')||!identifier(payment.order_id,'order')||payment.status!=='captured'||
      payment.currency!=='INR'||!Number.isSafeInteger(payment.amount))return false
   const intent=await one<Intent>(db,`SELECT * FROM order_checkout_payments
     WHERE provider_order_id=? AND mode=? AND payment_id IS NULL`,payment.order_id,mode)
   if(!intent)return false
-  const timely=Number(time<intent.expires_at)
+  // Use the signed capture event time when available. Browser proofs and
+  // provider lookups cannot establish the original capture time.
+  const captureTime=typeof eventTime==='number'&&Number.isSafeInteger(eventTime)&&
+    eventTime>=intent.expires_at-paymentHoldSeconds&&eventTime<=time?eventTime:time
+  const timely=Number(captureTime<intent.expires_at)
   const applied=await db.batch([
     statement(db,`UPDATE order_checkout_payments SET payment_id=?,captured_at=? WHERE order_id=? AND mode=? AND payment_id IS NULL
       AND EXISTS(SELECT 1 FROM orders WHERE id=? AND total=? AND payment_method='online' AND status IN('awaiting_payment','cancelled','rejected'))`,
-      payment.id,time,intent.order_id,mode,intent.order_id,payment.amount),
+      payment.id,captureTime,intent.order_id,mode,intent.order_id,payment.amount),
     statement(db,`UPDATE orders SET
       status=CASE WHEN status='awaiting_payment' AND ?=1 THEN 'placed' WHEN status='awaiting_payment' THEN 'cancelled' ELSE status END,
       stocked=CASE WHEN status='awaiting_payment' AND ?=1 THEN stocked ELSE 0 END,
@@ -175,17 +179,17 @@ checkoutPayments.post('/orders/:id/payment/reconcile',c=>reconcilePayment(c,'cus
 export async function applyStandardEvent(db:D1Database,event:PaymentEvent,credentials:Credentials,time=now()){
   const kind=event.event??'',payment=event.payload?.payment?.entity,razorOrder=event.payload?.order?.entity
   if(kind==='payment.captured'){
-    if(payment)await applyCapturedPayment(db,payment,credentials.mode,time)
+    if(payment)await applyCapturedPayment(db,payment,credentials.mode,time,event.created_at)
     return true
   }
   if(kind==='order.paid'){
     if(payment&&(!razorOrder||razorOrder.id===payment.order_id)){
-      await applyCapturedPayment(db,payment,credentials.mode,time)
+      await applyCapturedPayment(db,payment,credentials.mode,time,event.created_at)
     }else if(!payment&&identifier(razorOrder?.id,'order')&&razorOrder?.currency==='INR'&&razorOrder?.status==='paid'&&
       await one(db,'SELECT 1 FROM order_checkout_payments WHERE provider_order_id=? AND mode=? AND payment_id IS NULL',razorOrder.id,credentials.mode)){
       const captured=await fetchCapturedPayment(credentials,razorOrder.id)
       if(!captured)throw new Problem(503,'Razorpay payment reconciliation is pending.')
-      await applyCapturedPayment(db,captured,credentials.mode,time)
+      await applyCapturedPayment(db,captured,credentials.mode,time,event.created_at)
     }
     return true
   }

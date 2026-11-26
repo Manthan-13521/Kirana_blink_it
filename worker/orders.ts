@@ -26,7 +26,7 @@ async function quote(c:Ctx, data:Record<string,unknown>, pos:boolean, placing=fa
   }
   if (!pos && (method==='online'?!config.enable_online:!config.enable_cod)) throw new Problem(409,'That payment method is unavailable.','payment_unavailable')
   if (!pos && method==='online' && !localhost(c) && !checkoutCredentials(c.env)) throw new Problem(503,'Online payment provider has not been configured.','payment_unavailable')
-  const products=await all<Product>(db,`SELECT id,sku,name,unit,step,price,stock,min_steps,max_steps,tax_bps,hsn FROM products WHERE id IN (${input.map(()=>'?').join(',')}) AND active=1 AND (expiry IS NULL OR expiry>=date('now','+330 minutes'))`, ...input.map(i=>i.id))
+  const products=await all<Product>(db,`SELECT id,sku,name,unit,step,price,stock,min_steps,max_steps,tax_bps,hsn${placing?',image':''} FROM products WHERE id IN (${input.map(()=>'?').join(',')}) AND active=1 AND (expiry IS NULL OR expiry>=date('now','+330 minutes'))`, ...input.map(i=>i.id))
   const byId=new Map(products.map(p=>[p.id,p]))
   const items=input.map(({id,steps})=>{
     const item=byId.get(id)
@@ -86,7 +86,7 @@ async function create(c:Ctx,pos:boolean) {
     await db.batch([
       statement(db,`INSERT INTO orders(id,account_id,request_key,request_fingerprint,channel,fulfillment,status,payment_method,payment_status,subtotal,fees,total,tax,slot_start,slot_end,address_json,billing_json,note,created_at,updated_at,config_revision)
         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,orderId,account.id,key,fingerprint,pos?'pos':'online',q.fulfillment,state,q.method,funds,q.subtotal,q.fees,q.total,q.tax,q.slot?.start??null,q.slot?.end??null,q.address?JSON.stringify(q.address):null,receipt,q.note,time,time,q.config.revision),
-      ...q.items.map(({item,quantity,total,tax})=>statement(db,`INSERT INTO order_items(order_id,product_id,sku,name,unit,step,quantity,price,line_total,tax,tax_bps,hsn) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,orderId,item.id,item.sku,item.name,item.unit,item.step,quantity,item.price,total,tax,item.tax_bps,item.hsn)),
+      ...q.items.map(({item,quantity,total,tax})=>statement(db,`INSERT INTO order_items(order_id,product_id,sku,name,unit,step,quantity,price,line_total,tax,tax_bps,hsn,image) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,orderId,item.id,item.sku,item.name,item.unit,item.step,quantity,item.price,total,tax,item.tax_bps,item.hsn,item.image)),
       audit(db,account.id,pos?'counter.sale':'order.create',orderId),
     ])
   } catch(e) {
@@ -137,23 +137,30 @@ orders.get('/orders',async c=>{
 })
 orders.get('/orders/:id',async c=>{
   const account=role(c,'customer','owner','staff','rider'), db=c.env.DB
-  const row=await order(db,c.req.param('id'));authorizeOrder(account,row)
+  const orderId=c.req.param('id'), previousVersion=account.role==='customer'?c.req.query('tracking'):undefined
+  const row:(Order&{last_event?:number|null})|null=previousVersion
+    ?await one<Order&{last_event:number|null}>(db,`SELECT o.*,(SELECT id FROM order_events WHERE order_id=o.id ORDER BY id DESC LIMIT 1) AS last_event
+      FROM orders o WHERE o.id=?`,orderId)
+    :await order(db,orderId)
+  if(!row)throw new Problem(404,'Order not found.')
+  authorizeOrder(account,row)
+  const trackingVersion=(lastEvent:number|null)=>[row.status,row.payment_status,row.updated_at,lastEvent??0].join('.')
+  if(previousVersion&&previousVersion===trackingVersion(row.last_event??null))return c.json({unchanged:true})
   const canAccessContact=account.role!=='rider'||!terminal.has(row.status)
   const [items,events,cases,refunds,pendingRefunds,paymentAttempt]=await Promise.all([
     all(db,'SELECT * FROM order_items WHERE order_id=? ORDER BY product_id',row.id),
-    all(db,'SELECT status,note,created_at FROM order_events WHERE order_id=? ORDER BY id',row.id),
+    all<{id:number;status:string;note:string;created_at:number}>(db,'SELECT id,status,note,created_at FROM order_events WHERE order_id=? ORDER BY id',row.id),
     account.role==='rider'?[]:all(db,'SELECT id,kind,reason,response,status,created_at FROM cases WHERE order_id=? ORDER BY created_at DESC',row.id),
     account.role==='rider'?[]:all(db,'SELECT amount,created_at FROM refunds WHERE order_id=? ORDER BY created_at DESC',row.id),
     account.role!=='rider'&&!localhost(c)&&row.payment_method==='online'&&row.payment_status==='paid'
       ?all<{id:string;amount:number;status:string;failed_at:number|null;mode:string}>(db,`${refundSelect} WHERE r.order_id=? AND r.status<>'processed' ORDER BY r.created_at LIMIT 25`,row.id):[],
-    !localhost(c)&&row.payment_method==='online'&&(account.role==='customer'&&row.status==='awaiting_payment'||
-      account.role==='owner'&&['unpaid','void'].includes(row.payment_status))
+    !localhost(c)&&row.payment_method==='online'&&['customer','owner'].includes(account.role)&&['unpaid','void'].includes(row.payment_status)
       ?one<{failed_at:number|null;provider_order_id:string|null}>(db,'SELECT failed_at,provider_order_id FROM order_checkout_payments WHERE order_id=?',row.id):null,
   ])
   const liveRefunds=account.role==='owner'&&c.env.RAZORPAY_LIVE_REFUNDS==='enabled'
     ?pendingRefunds.filter(r=>r.mode==='live'&&!r.failed_at).map(({id,amount,status})=>({id,amount,status})):undefined
   const sanitized=Object.fromEntries(publicOrderFields.split(',').map(k=>[k,row[k as keyof Order]]))
-  return c.json({...sanitized,address:canAccessContact&&row.address_json?JSON.parse(row.address_json):null,invoice:account.role==='rider'?null:JSON.parse(row.billing_json),assigned_to:row.assigned_to,items,events,cases,refunds,refundPending:Boolean(pendingRefunds.length),refundFailed:pendingRefunds.some(r=>Boolean(r.failed_at)),paymentFailed:Boolean(paymentAttempt?.failed_at),canReconcilePayment:Boolean(paymentAttempt?.provider_order_id),liveRefunds})
+  return c.json({...sanitized,trackingVersion:trackingVersion(events.at(-1)?.id??null),address:canAccessContact&&row.address_json?JSON.parse(row.address_json):null,invoice:account.role==='rider'?null:JSON.parse(row.billing_json),assigned_to:row.assigned_to,items,events:events.map(({id,...event})=>event),cases,refunds,refundPending:Boolean(pendingRefunds.length),refundFailed:pendingRefunds.some(r=>Boolean(r.failed_at)),paymentFailed:Boolean(paymentAttempt?.failed_at),canReconcilePayment:Boolean(paymentAttempt?.provider_order_id),liveRefunds})
 })
 
 const ownerTransitions: Record<string,string[]> = {

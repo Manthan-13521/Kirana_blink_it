@@ -1,6 +1,6 @@
 import { useCallback,lazy,Suspense,useEffect,useRef,useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { ArrowRight,Bell,ChevronDown,CircleUser,MapPin,Search,ShoppingBasket,Store,Truck,X } from 'lucide-react'
+import { ArrowRight,Bell,ChevronDown,CircleUser,MapPin,PackageCheck,Search,ShoppingBasket,Store,Truck,X } from 'lucide-react'
 import { AddressForm,OrderList,OrderView } from './checkout'
 import { api,message,pretty,rupee,send } from './lib'
 import type { Account,Address,CartLine,OrderDetail,Product,Shop } from './lib'
@@ -10,7 +10,12 @@ import { Empty,ErrorText,Mark,Sheet,Success } from './ui'
 import './style.css'
 const Owner=lazy(()=>import('./admin').then(m=>({default:m.OwnerDashboard})))
 const Rider=lazy(()=>import('./rider').then(m=>({default:m.RiderDashboard})))
-const pathView=()=>location.pathname.startsWith('/owner')?'owner':location.pathname.startsWith('/rider')?'rider':'shop'
+type View='shop'|'owner'|'rider'|'orders'
+const pathView=():View=>location.pathname==='/orders'?'orders':location.pathname.startsWith('/owner')?'owner':location.pathname.startsWith('/rider')?'rider':'shop'
+function orderFromUrl(url=new URL(location.href)){
+  const id=url.searchParams.get('order')
+  return id&&/^[0-9a-f-]{36}$/.test(id)?id:null
+}
 const cartKey=(id?:string)=>'kirana-basket-'+(id||'guest')
 function readCart(key:string):CartLine[]|null{
   try{
@@ -49,7 +54,7 @@ function saveGuestRemainder(lines:CartLine[]){
   if(lines.length){saveBasket(cartKey(),lines);return}
   try{localStorage.removeItem(cartKey())}catch{/* Storage access can be disabled by the browser. */}
 }
-type Modal='signin'|'profile'|'orders'|'location'|'notices'|null
+type Modal='signin'|'profile'|'location'|'notices'|null
 
 function App(){
   const [shop,setShop]=useState<Shop|null>(null),[account,setAccount]=useState<Account|null>(null)
@@ -69,18 +74,25 @@ function App(){
       const checkout=url.searchParams.get('checkout')==='resume'&&me.account?.role==='customer'
       const signedIn=checkout||url.searchParams.get('signin')==='complete'
       const basket=await loadBasket(me.account,signedIn)
-      const orderId=url.searchParams.get('order')
+      let returningToOrders=false
+      if(signedIn){
+        try{
+          returningToOrders=me.account?.role==='customer'&&sessionStorage.getItem('kirana-return-to-orders')==='1'
+          sessionStorage.removeItem('kirana-return-to-orders')
+        }catch{/* Orders are always available from the account menu. */}
+      }
+      const orderId=me.account?.role==='customer'?orderFromUrl(url):null
+      if(orderId||returningToOrders){url.pathname='/orders';setView('orders');setOrder(orderId)}
       if(signedIn||orderId){
-        for(const key of ['checkout','signin','order'])url.searchParams.delete(key)
+        for(const key of ['checkout','signin'])url.searchParams.delete(key)
         history.replaceState({},'',url)
       }
-      if(orderId&&me.account?.role==='customer'&&/^[0-9a-f-]{36}$/.test(orderId))setOrder(orderId)
       cartChanged.current=basket.changed
       if(basket.changed&&me.account&&saveBasket(cartKey(me.account.id),basket.lines))saveGuestRemainder(basket.remainder)
       setAccount(me.account);setCart(basket.lines);setReady(true)
       if(checkout&&basket.lines.length){setResumeCheckout(true);openCart(true)}
     },e=>{setError(message(e));setReady(true)})
-    const handle=()=>{setView(pathView());setModal(null);setOrder(null);openCart(false)}
+    const handle=()=>{setView(pathView());setModal(null);setOrder(orderFromUrl());openCart(false)}
     window.addEventListener('popstate',handle)
     return()=>window.removeEventListener('popstate',handle)
   },[])
@@ -97,9 +109,17 @@ function App(){
     return()=>clearTimeout(t)
   },[cart,account?.id,ready])
   const changeCart=(lines:CartLine[])=>{cartChanged.current=true;setCart(lines)}
-  const go=(target:'shop'|'owner'|'rider')=>{
+  const go=(target:View)=>{
     if(target!==view){history.pushState({},'',target==='shop'?'/':'/'+target);setView(target);window.scrollTo(0,0);openCart(false);setOrder(null)}
     setModal(null)
+  }
+  const openCustomerOrder=(id:string)=>{
+    history.pushState({},'','/orders?order='+encodeURIComponent(id))
+    setView('orders');setOrder(id);setModal(null);openCart(false)
+  }
+  const closeOrder=()=>{
+    if(pathView()==='orders')history.replaceState({},'','/orders')
+    setOrder(null)
   }
   const signIn=(role:'customer'|'owner'|'rider')=>{setLoginRole(role);setModal('signin')}
   async function signed(actor:Account){
@@ -110,7 +130,8 @@ function App(){
     setAccount(actor);setModal(null)
     if(actor.role==='owner'||actor.role==='staff')go('owner')
     if(actor.role==='rider')go('rider')
-    if(actor.role==='customer'&&view!=='shop')go('shop')
+    if(actor.role==='customer'&&view==='orders')setOrder(orderFromUrl())
+    else if(actor.role==='customer'&&view!=='shop')go('shop')
     if(actor.role==='customer'&&checkoutIntent.current){
       setResumeCheckout(true);openCart(true)
     }
@@ -157,6 +178,7 @@ function App(){
         <label className="search-box site-search"><Search size={20}/><input aria-label="Search groceries" placeholder={'Search “milk”, “bread”, “atta”…'} value={query} onChange={e=>setQuery(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')document.getElementById('products')?.scrollIntoView({behavior:'smooth'})}}/>{query&&<button className="search-clear" aria-label="Clear search" onClick={()=>setQuery('')}><X size={16}/></button>}</label>
       </>}
       <div className="header-actions">
+        {account?.role==='customer'&&view==='shop'&&<button className="icon-button" aria-label="My orders" title="My orders" onClick={()=>go('orders')}><PackageCheck size={21}/></button>}
         {account&&<button className="icon-button bell-button" aria-label="Notifications" onClick={()=>setModal('notices')}><Bell size={20}/></button>}
         <button className="account-button" aria-label={account?'Account for '+account.name:'Sign in'} onClick={()=>account?setModal('profile'):signIn(currentRole)}><CircleUser size={21}/><span>{account?account.name:'Sign in'}</span></button>
         {view==='shop'&&<button className="basket-button" aria-label={'My basket'+(cartCount?', '+cartCount+' items':'')} onClick={()=>openCart(true)}><ShoppingBasket size={20}/><span>{cartCount?rupee(cartValue):'My basket'}</span>{cartCount>0&&<b>{cartCount}</b>}</button>}
@@ -164,16 +186,21 @@ function App(){
     </div></header>
     <ErrorText text={error}/>
     {view==='shop'?<Storefront shop={shop} refreshShop={refreshShop} account={account} query={query} setQuery={setQuery} cart={cart} setCart={changeCart} cartOpen={cartOpen} startCheckout={resumeCheckout} openCart={open=>{setResumeCheckout(false);openCart(open)}}
-      requireLogin={()=>{checkoutIntent.current=true;openCart(false);signIn('customer')}} openOrder={setOrder} setLocation={()=>setModal('location')}/>
-      :!allowed||!account?<main className="shell role-entry">
+      requireLogin={()=>{checkoutIntent.current=true;openCart(false);signIn('customer')}} openOrder={openCustomerOrder} setLocation={()=>setModal('location')}/>
+      :view==='orders'?<main className="shell my-orders stack">
+        <div className="heading"><div><h1>My orders</h1><p>Review purchases and track deliveries and pickups.</p></div>
+          <button className="button secondary" onClick={()=>go('shop')}>Go to storefront</button></div>
+        {!ready?<p>Loading your account…</p>:account?.role==='customer'?<OrderList active={!order} open={openCustomerOrder}/>:<Empty
+          title="Customer sign-in required" detail="Sign in with the account used to place your orders."
+          action={<button className="button primary" onClick={()=>signIn('customer')}>Sign in to view orders</button>}/>}
+      </main>:!allowed||!account?<main className="shell role-entry">
         <div className="console-hero"><div><small>{view==='owner'?'STORE WORKSPACE':'DELIVERY WORKSPACE'}</small><h1>{view==='owner'?'Manage your Kirana':'Deliver for your Kirana'}</h1><p>{view==='owner'?'Catalog, orders, counter sales and store settings.':'Assigned orders, route stops and cash collections.'}</p></div><button className="button light" onClick={()=>signIn(currentRole)}>Sign in as {view==='owner'?'owner':'rider'} <ArrowRight size={17}/></button></div>
       </main>:<Suspense fallback={<main className="shell startup"><p>Loading workspace…</p></main>}>{view==='owner'?<Owner account={account} shop={shop} refreshShop={refreshShop}/>:<Rider account={account} shop={shop}/>}</Suspense>}
     {modal==='signin'&&<SignIn role={loginRole} local={local} checkout={checkoutIntent.current} close={()=>{checkoutIntent.current=false;setModal(null)}} signed={signed}/>}
-    {modal==='profile'&&account&&<Profile account={account} setAccount={setAccount} local={local} close={()=>setModal(null)} logOut={()=>void logOut()} orders={()=>setModal('orders')} addresses={()=>setModal('location')} switchRole={()=>signIn(currentRole)}/>}
-    {modal==='orders'&&account&&<Sheet title="Order history" onClose={()=>setModal(null)} wide><OrderList open={id=>{setModal(null);setOrder(id)}}/></Sheet>}
+    {modal==='profile'&&account&&<Profile account={account} setAccount={setAccount} local={local} close={()=>setModal(null)} logOut={()=>void logOut()} orders={()=>go('orders')} addresses={()=>setModal('location')} switchRole={()=>signIn(currentRole)}/>}
     {modal==='location'&&<Location shop={shop} account={account} onClose={()=>setModal(null)} signIn={()=>signIn('customer')}/>}
-    {modal==='notices'&&account&&<Notices customer={account?.role==='customer'} local={local} close={()=>setModal(null)} open={id=>{setModal(null);setOrder(id)}}/>}
-    {order&&account&&<OrderView local={local} orderId={order} onClose={()=>setOrder(null)} account={account} shop={shop} reorder={account.role==='customer'?reorder:undefined}/>}
+    {modal==='notices'&&account&&<Notices customer={account?.role==='customer'} local={local} close={()=>setModal(null)} open={id=>{if(account.role==='customer')openCustomerOrder(id);else{setModal(null);setOrder(id)}}}/>}
+    {order&&account&&(view!=='orders'||account.role==='customer')&&<OrderView key={order} local={local} orderId={order} onClose={closeOrder} account={account} shop={shop} reorder={account.role==='customer'?async items=>{await reorder(items);go('shop');openCart(true)}:undefined}/>}
   </div>
 }
 
@@ -202,6 +229,10 @@ function SignIn({role,local,checkout,close,signed}:{checkout:boolean;role:'custo
         try{
           const {url}=await send<{url:string}>('/auth/google',{workspace:role==='customer'?'shop':role,checkout,invite})
           if(new URL(url).origin!=='https://accounts.google.com')throw new Error('Google sign-in returned an invalid link.')
+          try{
+            if(pathView()==='orders')sessionStorage.setItem('kirana-return-to-orders','1')
+            else sessionStorage.removeItem('kirana-return-to-orders')
+          }catch{/* Google sign-in can continue without local session storage. */}
           window.location.assign(url)
         }catch(e){setError(message(e));setBusy(false)}
       }}>

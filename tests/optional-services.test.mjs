@@ -530,6 +530,70 @@ function seedPending(db,id,time){
     SELECT ?,id,sku,name,unit,step,step,price,price,0,tax_bps,hsn FROM products WHERE id='tomato'`).run(id)
 }
 
+test('signed capture confirms a disconnected shopper order once and immediately updates the owner queue',async t=>{
+  const {application}=await import('../worker/app.ts')
+  const {digest}=await import('../worker/shared.ts')
+  const {sqlite,db}=await integrationFixture(t)
+  const time=Math.floor(Date.now()/1000),id='99999999-9999-4999-8999-999999999999'
+  const stock=()=>sqlite.prepare("SELECT stock FROM products WHERE id='tomato'").get().stock
+  const previous=stock()
+  seedPending(sqlite,id,time)
+  const providerOrder='order_disconnected1'
+  sqlite.prepare('INSERT INTO order_checkout_payments(order_id,provider_order_id,mode,expires_at) VALUES(?,?,?,?)')
+    .run(id,providerOrder,'live',time+300)
+  const cookie=(character)=>'kirana_session='+character.repeat(64)
+  for(const [character,account] of [['a','demo-customer'],['b','demo-owner']]){
+    sqlite.prepare('INSERT INTO sessions(hash,account_id,expires_at) VALUES(?,?,?)')
+      .run(await digest(character.repeat(64)),account,time+60)
+  }
+  const worker=application()
+  const env={DB:db,APP_MODE:'staging',PUBLIC_CHECKOUT:'disabled',RAZORPAY_MODE:'live',RAZORPAY_KEY_ID:'rzp_live_Fixture',
+    RAZORPAY_KEY_SECRET:'synthetic-merchant-key',RAZORPAY_WEBHOOK_SECRET:'synthetic-webhook-key'}
+  const request=(path,options)=>worker.fetch(new Request('https://store.example/api'+path,options),env)
+  const shopper=path=>request(path,{headers:{Cookie:cookie('a')}}).then(r=>r.json())
+  const ownerQueue=()=>request('/orders?status=placed',{headers:{Cookie:cookie('b')}}).then(r=>r.json())
+  const original=await shopper('/orders/'+id)
+  assert.equal(original.status,'awaiting_payment')
+  assert.equal(original.payment_status,'unpaid')
+  assert.equal((await ownerQueue()).orders.length,0)
+  const webhook=async(event,status,amount,valid=true)=>{
+    const body=JSON.stringify({event,payload:{payment:{entity:{id:'pay_disconnected1',order_id:providerOrder,currency:'INR',status,amount}}}})
+    const signature=createHmac('sha256',env.RAZORPAY_WEBHOOK_SECRET).update(body).digest('hex')
+    return request('/webhooks/razorpay',{method:'POST',headers:{'X-Razorpay-Signature':valid?signature:'0'.repeat(64)},body})
+  }
+  assert.equal((await webhook('payment.captured','captured',4300,false)).status,403)
+  assert.equal((await webhook('payment.captured','captured',4400)).status,200)
+  assert.equal((await webhook('payment.failed','failed',4300)).status,200)
+  assert.equal((await shopper('/orders/'+id)).paymentFailed,true)
+  assert.equal((await ownerQueue()).orders.length,0)
+  assert.equal((await webhook('payment.captured','captured',4300)).status,200)
+  assert.equal((await webhook('order.paid','captured',4300)).status,200)
+  const confirmed=await shopper('/orders/'+id+'?tracking='+original.trackingVersion)
+  assert.equal(confirmed.status,'placed')
+  assert.equal(confirmed.payment_status,'paid')
+  assert.equal(confirmed.events.filter(event=>event.status==='placed').length,1)
+  assert.equal(stock(),previous-confirmed.items[0].quantity)
+  assert.deepEqual((await ownerQueue()).orders.map(order=>order.id),[id])
+
+  const delayed='22222222-5555-4111-8888-999999999999',closed='22222222-5555-4111-8888-888888888888'
+  for(const [localId,remote] of [[delayed,'order_delayedCapture'],[closed,'order_closedCapture']]){
+    seedPending(sqlite,localId,time)
+    sqlite.prepare('INSERT INTO order_checkout_payments(order_id,provider_order_id,mode,expires_at) VALUES(?,?,?,?)')
+      .run(localId,remote,'live',time-20)
+  }
+  sqlite.prepare("UPDATE orders SET status='cancelled',payment_status='void',stocked=0,slot_retained=0 WHERE id=?").run(closed)
+  for(const [remote,payment] of [['order_delayedCapture','pay_delayedCapture'],['order_closedCapture','pay_closedCapture']]){
+    const body=JSON.stringify({event:'payment.captured',created_at:time-30,payload:{payment:{
+      entity:{id:payment,order_id:remote,currency:'INR',status:'captured',amount:4300},
+    }}})
+    const signature=createHmac('sha256',env.RAZORPAY_WEBHOOK_SECRET).update(body).digest('hex')
+    assert.equal((await request('/webhooks/razorpay',{method:'POST',headers:{'X-Razorpay-Signature':signature},body})).status,200)
+  }
+  assert.equal((await shopper('/orders/'+delayed)).status,'placed')
+  assert.equal((await shopper('/orders/'+closed)).status,'cancelled')
+  assert.equal((await shopper('/orders/'+closed)).refundPending,true)
+})
+
 test('live webhooks record retries, late captures and refund lifecycle without moving money',async t=>{
   const {applyStandardEvent}=await import('../worker/standard-checkout.ts')
   const {runPaymentMaintenance,queueOrderRefund}=await import('../worker/checkout-payments.ts')

@@ -53,6 +53,7 @@ const queries = {
   'owner queue by state': ['SELECT id,status FROM orders WHERE status=? ORDER BY created_at DESC,id DESC LIMIT 41',['placed']],
   'assigned rider queue': ["SELECT id,route_rank,address_json,status FROM orders WHERE assigned_to=? AND status IN ('ready','out_for_delivery') ORDER BY route_rank,created_at LIMIT 30",['demo-rider']],
   'owned order detail': ['SELECT * FROM orders WHERE id=?',['plan-1']],
+  'order tracking version': ['SELECT o.status,(SELECT id FROM order_events WHERE order_id=o.id ORDER BY id DESC LIMIT 1) FROM orders o WHERE o.id=?',['plan-1']],
   'order item lines': ['SELECT * FROM order_items WHERE order_id=? ORDER BY product_id',['plan-1']],
   'order event timeline': ['SELECT status,note,created_at FROM order_events WHERE order_id=? ORDER BY id',['plan-1']],
   'case queue': ["SELECT cases.*,orders.total FROM cases JOIN orders ON orders.id=cases.order_id WHERE cases.status='open' ORDER BY cases.created_at DESC LIMIT 50",[]],
@@ -71,7 +72,7 @@ if(refined) {
   for(const [name,index] of Object.entries({
     'low stock':'products_low_stock','expiry alerts':'products_upcoming_expiry','rider history':'rider_history',
     'due refund processing':'provider_refund_due',
-    'product media retention':'products_media_reference','active rider cash collection':'rider_unreconciled','public all products cursor':'products_active_id','two-token prefix search':'PRIMARY KEY','public category cursor':'products_category','slot admission':'slot_usage','customer order cursor':'orders_owner',
+    'product media retention':'products_media_reference','active rider cash collection':'rider_unreconciled','public all products cursor':'products_active_id','two-token prefix search':'PRIMARY KEY','public category cursor':'products_category','slot admission':'slot_usage','customer order cursor':'orders_owner','order tracking version':'order_timeline',
   })) {
     if(!plans[name].some(detail=>detail.includes(index))||plans[name].some(detail=>detail.includes('TEMP B-TREE'))) {
       throw new Error(`${name} did not use ${index} without a sort`)

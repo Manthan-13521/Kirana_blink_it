@@ -20,7 +20,7 @@ export function Empty({title,detail,action}:{title:string;detail?:string;action?
 }
 export function ErrorText({text}:{text:string}){return text?<div className="alert" role="alert"><CircleAlert size={17}/><span>{text}</span></div>:null}
 export function Success({text}:{text:string}){return text?<div className="notice" role="status"><CircleCheck size={17}/><span>{text}</span></div>:null}
-export function Status({value}:{value:string}){return <span className={'status status-'+value}>{pretty(value)}</span>}
+export function Status({value,label}:{value:string;label?:string}){return <span className={'status status-'+value}>{label??pretty(value)}</span>}
 export function Heading({title,detail,action}:{title:string;detail?:string;action?:ReactNode}){
   return <div className="heading"><div><h2>{title}</h2>{detail&&<p>{detail}</p>}</div>{action}</div>
 }

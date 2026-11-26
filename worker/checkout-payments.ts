@@ -6,7 +6,7 @@ import type { Credentials,PaymentMode } from './payment-provider'
 type Link={link_id:string|null;payment_id:string|null;expires_at:number}
 export type Refund={id:string;order_id:string;case_id:string|null;actor:string;amount:number;status:string;provider_id:string|null;payment_id:string;mode:PaymentMode;failed_at:number|null}
 export type Entity={id?:string;order_id?:string;reference_id?:string;receipt?:string;amount?:number;amount_paid?:number;currency?:string;status?:string;payment_id?:string;notes?:Record<string,unknown>}
-export type PaymentEvent={event?:string;payload?:Record<string,{entity?:Entity}>}
+export type PaymentEvent={event?:string;created_at?:number;payload?:Record<string,{entity?:Entity}>}
 
 // Refund scans start with the local job index and join each payment source by its order key.
 export const refundSelect=`SELECT r.*,COALESCE(n.payment_id,l.payment_id) AS payment_id,COALESCE(n.mode,'test') AS mode

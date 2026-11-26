@@ -1,10 +1,10 @@
 import { flushSync } from 'react-dom'
 import { checkoutDisplay,loadCheckout } from './razorpay-checkout'
 import type { PaymentChallenge,PaymentProof } from './razorpay-checkout'
-import { lazy,Suspense,useEffect,useMemo,useState } from 'react'
+import { lazy,Suspense,useCallback,useEffect,useMemo,useRef,useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
-import { ArrowLeft,ArrowRight,Check,Clock3,CreditCard,FileDown,MapPin,Minus,Plus,ShoppingBasket,Store,Truck,Wallet } from 'lucide-react'
-import { api,checkoutDraftKey,date,displayOrder,invoice,message,pack,pretty,readCheckoutDraft,rupee,saveCheckoutDraft,send,windowLabel } from './lib'
+import { ArrowLeft,ArrowRight,Check,Clock3,CreditCard,FileDown,MapPin,Minus,Package,Plus,ShoppingBasket,Store,Truck,Wallet } from 'lucide-react'
+import { api,checkoutDraftKey,date,displayOrder,invoice,message,pack,pretty,readCheckoutDraft,rupee,saveCheckoutDraft,send,timestamp,windowLabel } from './lib'
 import type { Account,Address,CartLine,OrderDetail,OrderRow,Product,Quote,Shop,Slot } from './lib'
 import { Empty,ErrorText,Sheet,Status,Success } from './ui'
 const MapPinView=lazy(()=>import('./MapPin'))
@@ -191,29 +191,140 @@ export function Cart({shop,refreshShop,account,cart,change,onClose,requireLogin,
   </Sheet>
 }
 
-export function OrderList({open}:{open:(id:string)=>void}){
+const closedOrders=new Set(['completed','cancelled','rejected','failed'])
+const fulfillmentName=(value:string)=>value==='delivery'?'Home delivery':value==='pickup'?'Store pickup':pretty(value)
+const paymentName=(value:string)=>value==='online'?'Online · Razorpay':value==='cash'?'Cash':pretty(value)
+function statusName(order:Pick<OrderRow,'status'|'fulfillment'>,status=order.status){
+  if(status==='ready')return order.fulfillment==='pickup'?'Ready for pickup':'Ready for delivery'
+  if(status==='completed')return order.fulfillment==='pickup'?'Collected':order.fulfillment==='delivery'?'Delivered':'Completed'
+  return ({awaiting_payment:'Awaiting payment',placed:'Order confirmed',accepted:'Accepted by store',packing:'Preparing your order',
+    out_for_delivery:'Out for delivery',failed:'Delivery unsuccessful',cancelled:'Cancelled',rejected:'Declined by store'} as Record<string,string>)[status]??pretty(status)
+}
+function paymentStatusName(order:Pick<OrderRow,'payment_status'|'fulfillment'>){
+  if(order.payment_status==='paid')return 'Payment successful'
+  if(order.payment_status==='cash_due')return order.fulfillment==='pickup'?'Cash due at pickup':'Cash due on delivery'
+  return ({unpaid:'Awaiting payment',cash_collected:'Cash collected',refunded:'Refunded',void:'Payment closed'} as Record<string,string>)[order.payment_status]??pretty(order.payment_status)
+}
+
+export function OrderList({open,active=true}:{open:(id:string)=>void;active?:boolean}){
   const [orders,setOrders]=useState<OrderRow[]>([])
   const [error,setError]=useState('')
   const [next,setNext]=useState<string|null>(null)
   const [loading,setLoading]=useState(true)
-  const load=async(cursor?:string)=>{
-    setLoading(true)
-    try{const data=await api<{orders:OrderRow[];next:string|null}>('/orders'+(cursor?'?before='+encodeURIComponent(cursor):''));setOrders(previous=>cursor?[...previous,...data.orders]:data.orders);setNext(data.next)}
-    catch(e){setError(message(e))}finally{setLoading(false)}
-  }
-  useEffect(()=>{void load()},[])
+  const pending=useRef<AbortController|null>(null)
+  const [paged,setPaged]=useState(false)
+  const load=useCallback(async(cursor?:string)=>{
+    pending.current?.abort()
+    const request=new AbortController()
+    pending.current=request;setLoading(true)
+    try{
+      const data=await api<{orders:OrderRow[];next:string|null}>('/orders'+(cursor?'?before='+encodeURIComponent(cursor):''),{signal:request.signal})
+      if(!request.signal.aborted){
+        setOrders(previous=>cursor?[...previous,...data.orders]:data.orders);setNext(data.next);setPaged(Boolean(cursor));setError('')
+      }
+    }catch(e){if(!request.signal.aborted)setError(message(e))}
+    finally{if(!request.signal.aborted)setLoading(false)}
+  },[])
+  useEffect(()=>{
+    if(!active)return
+    void load()
+    return ()=>pending.current?.abort()
+  },[active,load])
+  const hasOpenOrder=orders.some(order=>!closedOrders.has(order.status))
+  useEffect(()=>{
+    if(!active||!hasOpenOrder||paged)return
+    const refresh=()=>{if(document.visibilityState==='visible')void load()}
+    const timer=setInterval(refresh,60000)
+    document.addEventListener('visibilitychange',refresh)
+    return ()=>{clearInterval(timer);document.removeEventListener('visibilitychange',refresh)}
+  },[active,hasOpenOrder,paged,load])
   return <div className="stack"><ErrorText text={error}/>{loading&&!orders.length?<p>Loading orders…</p>:!orders.length?<Empty title="No orders yet" detail="Your deliveries and pickups will appear here."/>:orders.map(order=><button key={order.id} className="order-row" onClick={()=>open(order.id)}>
-    <div><b>{displayOrder(order.id)}</b><small>{date(order.created_at)} · {pretty(order.fulfillment)}</small></div><Status value={order.status}/><strong>{rupee(order.total)}</strong>
-  </button>)}{next&&<button className="button secondary" disabled={loading} onClick={()=>void load(next)}>Load older orders</button>}</div>
+    <div><b>{displayOrder(order.id)}</b><small>{timestamp(order.created_at)} · {fulfillmentName(order.fulfillment)}</small></div>
+    <div><Status value={order.status} label={statusName(order)}/><small>{paymentStatusName(order)}</small></div><strong>{rupee(order.total)}</strong>
+  </button>)}<div className="actions">
+    <button className="button secondary" disabled={loading} onClick={()=>void load()}>Refresh orders</button>
+    {next&&<button className="button secondary" disabled={loading} onClick={()=>void load(next)}>Load older orders</button>}
+  </div></div>
+}
+
+function OrderTracking({order}:{order:OrderDetail}){
+  const steps=['placed','accepted','packing','ready',...(order.fulfillment==='delivery'?['out_for_delivery']:[]),'completed']
+  const statusEvents=new Map<string,OrderDetail['events'][number]>()
+  for(const event of order.events)if(!statusEvents.has(event.status))statusEvents.set(event.status,event)
+  const pendingOnline=order.payment_method==='online'
+  const cancelled=closedOrders.has(order.status)&&order.status!=='completed'
+  const entries=[
+    {key:'submitted',label:'Order placed',time:order.created_at},
+    ...steps.filter(step=>pendingOnline||step!=='placed').filter(step=>!cancelled||statusEvents.has(step)).map(key=>({
+      key,label:key==='placed'?'Payment confirmed':statusName(order,key),time:statusEvents.get(key)?.created_at,
+    })),
+    ...(cancelled?[{key:order.status,label:statusName(order),time:statusEvents.get(order.status)?.created_at??order.updated_at}]:[]),
+  ]
+  const current=order.status==='awaiting_payment'||!pendingOnline&&order.status==='placed'?'submitted':order.status
+  const notes=order.events.filter(event=>event.note)
+  return <section className="stack compact" aria-labelledby="tracking-heading">
+    <h3 id="tracking-heading">Track your order</h3>
+    <ol className="timeline tracking-timeline">{entries.map(entry=><li key={entry.key} aria-current={entry.key===current?'step':undefined}
+      className={entry.time?'':'tracking-upcoming'}>
+      {entry.time?<Check size={14} aria-hidden="true"/>:<Clock3 size={14} aria-hidden="true"/>}
+      <div><strong>{entry.label}</strong><small>{entry.time?timestamp(entry.time):'Upcoming'}</small></div>
+    </li>)}</ol>
+    {notes.map((event,i)=><p key={i} className="muted">{timestamp(event.created_at)} · {event.note}</p>)}
+  </section>
 }
 
 type DetailProps={orderId:string;onClose:()=>void;account:Account;shop:Shop;local?:boolean;extra?:(order:OrderDetail,refresh:()=>Promise<void>)=>ReactNode;reorder?:(items:OrderDetail['items'])=>Promise<void>}
 export function OrderView({orderId,onClose,account,shop,local=false,extra,reorder}:DetailProps){
   const [order,setOrder]=useState<OrderDetail|null>(null), [error,setError]=useState(''), [ok,setOk]=useState('')
   const [paymentOverlay,setPaymentOverlay]=useState(false)
+  const [verifying,setVerifying]=useState(false)
+  const [windowElapsed,setWindowElapsed]=useState(false)
   const [kind,setKind]=useState(''),[reason,setReason]=useState(''),[busy,setBusy]=useState(false)
-  const refresh=async()=>{try{setOrder(await api<OrderDetail>('/orders/'+orderId))}catch(e){setError(message(e))}}
-  useEffect(()=>{void refresh()},[orderId])
+  const pendingRefresh=useRef<AbortController|null>(null)
+  const refresh=useCallback(async(version?:string,silent=false)=>{
+    if(silent&&pendingRefresh.current)return
+    pendingRefresh.current?.abort()
+    const request=new AbortController()
+    pendingRefresh.current=request
+    try{
+      const data=await api<OrderDetail|{unchanged:true}>('/orders/'+orderId+(version?'?tracking='+encodeURIComponent(version):''),{signal:request.signal})
+      if(!request.signal.aborted){
+        if(!('unchanged' in data))setOrder(data)
+        if(!silent)setError('')
+      }
+    }catch(e){
+      if(!request.signal.aborted){
+        const status=(e as {status?:number}).status
+        if(status===401||status===403||status===404){setOrder(null);setError(message(e))}
+        else if(!silent)setError(message(e))
+      }
+    }
+    finally{if(pendingRefresh.current===request)pendingRefresh.current=null}
+  },[orderId])
+  useEffect(()=>{void refresh();return ()=>{pendingRefresh.current?.abort();pendingRefresh.current=null}},[refresh])
+  const trackingStatus=order?.status
+  const trackingVersion=order?.trackingVersion
+  const awaitingPayment=trackingStatus==='awaiting_payment'
+  useEffect(()=>{if(order?.paymentFailed)setVerifying(false)},[order?.paymentFailed])
+  const previousPaymentAttempt=Boolean(order?.canReconcilePayment&&!order.paymentFailed)
+  const windowEnd=order?.slot_end
+  useEffect(()=>{
+    if(!windowEnd){setWindowElapsed(false);return}
+    const remaining=windowEnd*1000-Date.now()
+    setWindowElapsed(remaining<=0)
+    if(remaining>0&&remaining<=2_147_483_647){
+      const timer=setTimeout(()=>setWindowElapsed(true),remaining)
+      return ()=>clearTimeout(timer)
+    }
+  },[windowEnd])
+  const checkFull=Boolean(awaitingPayment||order?.refundPending||order?.cases.some(request=>request.status==='open'))
+  useEffect(()=>{
+    if(account.role!=='customer'||busy||!trackingStatus||(!checkFull&&closedOrders.has(trackingStatus)))return
+    const tick=()=>{if(document.visibilityState==='visible')void refresh(checkFull?undefined:trackingVersion,true)}
+    const timer=setInterval(tick,awaitingPayment&&(verifying||previousPaymentAttempt)?15000:45000)
+    document.addEventListener('visibilitychange',tick)
+    return ()=>{clearInterval(timer);document.removeEventListener('visibilitychange',tick)}
+  },[account.role,awaitingPayment,busy,checkFull,previousPaymentAttempt,refresh,trackingStatus,trackingVersion,verifying])
   const operate=async(action:()=>Promise<unknown>,success:string)=>{
     setBusy(true);setError('');setOk('')
     try {await action();setOk(success);await refresh()}catch(e){setError(message(e))}finally{setBusy(false)}
@@ -234,16 +345,17 @@ export function OrderView({orderId,onClose,account,shop,local=false,extra,reorde
         })
       }finally{setPaymentOverlay(false)}
       if(proof){
+        setVerifying(true)
         const result=await send<{state:string}>('/orders/'+orderId+'/payment/verify',proof)
-        setOk(result.state==='confirmed'?'Payment confirmed.':
-          result.state==='refund_review'?'Payment arrived after the order closed. The store will review the refund.':
-          'Payment confirmation is pending. Check the order before trying again.')
+        if(result.state!=='pending')setVerifying(false)
+        if(result.state==='refund_review')setOk('Payment arrived after the order closed. The store will review the refund.')
       }
     }catch(e){setError(message(e))}
-    finally{await refresh();setBusy(false)}
+    finally{await refresh(undefined,true);setBusy(false)}
   }
   async function checkPayment(){
     setBusy(true);setError('');setOk('')
+    if(account.role==='customer')setVerifying(true)
     try{
       const prefix=account.role==='owner'?'/admin/orders/':'/orders/'
       const result=await send<{verified:boolean}>(prefix+orderId+'/payment/reconcile',{})
@@ -251,25 +363,46 @@ export function OrderView({orderId,onClose,account,shop,local=false,extra,reorde
       setOk(result.verified?'Razorpay verified the payment.':'Razorpay has not confirmed a capture yet.')
     }catch(e){setError(message(e))}finally{setBusy(false)}
   }
+  const customer=account.role==='customer'
+  const verifyingPayment=customer&&!local&&awaitingPayment&&(verifying||previousPaymentAttempt)
   const canPay=Boolean(shop.accepting&&shop.enable_online&&(
     order?.fulfillment==='pickup'?shop.enable_pickup:shop.enable_delivery))
   return <Sheet title={'Order '+displayOrder(orderId)} onClose={busy?()=>{}:onClose} wide suspended={paymentOverlay}>
     <ErrorText text={error}/><Success text={ok}/>
     {!order&&!error&&<p>Loading order…</p>}
+    {!order&&error&&<button type="button" className="button secondary" onClick={()=>void refresh()}>Try again</button>}
     {order&&<div className="stack">
-      <div className="order-banner"><div><b>{pretty(order.fulfillment)}</b><small>{order.slot_start&&order.slot_end?windowLabel(order.slot_start,order.slot_end):date(order.created_at)}</small></div><Status value={order.status}/></div>
-      {order.fulfillment==='pickup'&&<div className="info-box"><Store size={18}/><span><b>Collect at {shop.name}</b><small>{shop.address}</small></span></div>}
+      <div className="order-banner"><div><b>{fulfillmentName(order.fulfillment)}</b><small>Placed {timestamp(order.created_at)}</small></div>
+        <div role={customer?'status':undefined}><Status value={order.status} label={customer?statusName(order):undefined}/></div></div>
+      {customer&&<small className="muted order-reference">Order reference {order.id}</small>}
+      {order.slot_start&&order.slot_end&&<div className="info-box"><Clock3 size={18}/><span>
+        <b>{order.fulfillment==='pickup'?'Estimated pickup window':'Estimated delivery window'}</b>
+        <small>{windowLabel(order.slot_start,order.slot_end)}</small>
+        {customer&&windowElapsed&&!closedOrders.has(order.status)&&!(order.fulfillment==='pickup'&&order.status==='ready')&&order.status!=='awaiting_payment'&&
+          <small>The estimated window has passed. Check the latest status or contact the store below.</small>}
+      </span></div>}
+      {order.fulfillment==='pickup'&&<div className="info-box"><Store size={18}/><span><b>Collect at {order.invoice?.name||shop.name}</b><small>{order.invoice?.address||shop.address}</small></span></div>}
       {order.address&&<div className="info-box"><MapPin size={18}/><span><b>{order.address.recipient} · {order.address.label}</b><small>{order.address.line1}, {order.address.locality} {order.address.pin} · {order.address.phone}</small></span></div>}
-      <section className="stack compact"><div className="summary-line"><b>Items</b><button className="text-arrow" disabled={busy} onClick={()=>void refresh()}>Refresh</button></div>
-        {order.items.map(line=><div className="summary-line" key={line.product_id}><span>{line.name} <small className="muted">· {pack(line.unit,line.quantity)}</small></span><b>{rupee(line.line_total)}</b></div>)}
-        <div className="summary-line"><span>Fees</span><span>{rupee(order.fees)}</span></div>
-        <div className="summary-line total"><b>Total</b><b>{rupee(order.total)}</b></div>
-        <div className="summary-line"><span>{pretty(order.payment_method)}</span><Status value={order.payment_status}/></div>
+      <section className="stack compact"><div className="summary-line"><h3>Purchased items</h3><button className="text-arrow" disabled={busy} onClick={()=>void refresh()}>Refresh</button></div>
+        {order.items.map(line=><div className="summary-line order-item" key={line.product_id}>
+          <div className="order-item-main"><span className="order-item-image" aria-hidden="true">
+            <Package size={19}/>
+            {account.role!=='rider'&&line.image&&/^\/(catalog|media)\//.test(line.image)&&<img src={line.image} alt="" loading="lazy" onError={e=>{e.currentTarget.hidden=true}}/>}
+          </span><span><strong>{line.name}</strong><small>{pack(line.unit,line.step)} × {line.quantity/line.step} · {rupee(line.price)} per pack</small></span></div>
+          <b>{rupee(line.line_total)}</b>
+        </div>)}
+        <div className="summary-line"><span>Items subtotal</span><span>{rupee(order.subtotal)}</span></div>
+        <div className="summary-line"><span>Delivery charge</span><span>{rupee(order.fees)}</span></div>
+        {order.tax>0&&<div className="summary-line"><span>Tax included</span><span>{rupee(order.tax)}</span></div>}
+        <div className="summary-line total"><b>{['paid','cash_collected','refunded'].includes(order.payment_status)?'Order total':'Total payable'}</b><b>{rupee(order.total)}</b></div>
+        <div className="summary-line"><span>{paymentName(order.payment_method)}</span><Status value={order.payment_status}
+          label={customer?(verifyingPayment?'Verifying payment':paymentStatusName(order)):undefined}/></div>
       </section>
       {account.role==='customer'&&local&&order.status==='awaiting_payment'&&<div className="info-box stack compact"><b>Local payment simulator</b><span>No money is collected.</span><div className="actions"><button className="button primary" disabled={busy} onClick={()=>void operate(()=>send('/orders/'+orderId+'/test-payment',{result:'paid'}),'Test payment completed.')}>Simulate success</button><button className="button secondary" disabled={busy} onClick={()=>void operate(()=>send('/orders/'+orderId+'/test-payment',{result:'failed'}),'Test payment cancelled.')}>Simulate failure</button></div></div>}
       {account.role==='customer'&&!local&&order.status==='awaiting_payment'&&<div className="info-box stack compact">
-        <b>Pay securely with Razorpay</b>
-        <span>{!canPay?'The store is currently unable to start this payment. You can still check a previous payment or cancel the reservation.':
+        <b>{verifyingPayment?'Verifying payment':'Pay securely with Razorpay'}</b>
+        <span>{verifyingPayment?'Waiting for Razorpay to confirm capture. If your account was debited, check the payment before retrying.':
+          !canPay?'The store is currently unable to start this payment. You can still check a previous payment or cancel the reservation.':
           order.paymentFailed?'A payment attempt failed. You can retry while this reservation is open.':'Your items are reserved for up to 15 minutes. Check this order before retrying if payment is interrupted.'}</span>
         <div className="actions">
           <button className="button primary" disabled={busy||!canPay} onClick={()=>void pay()}>Pay {rupee(order.total)}</button>
@@ -278,6 +411,10 @@ export function OrderView({orderId,onClose,account,shop,local=false,extra,reorde
             ()=>send('/orders/'+orderId+'/payment/cancel',{}),'Reservation cancelled.'
           )}>Cancel reservation</button>
         </div>
+      </div>}
+      {customer&&!local&&order.status!=='awaiting_payment'&&order.canReconcilePayment&&<div className="info-box stack compact">
+        <span>If your account was debited before the reservation closed, check the original payment here.</span>
+        <button className="button secondary" disabled={busy} onClick={()=>void checkPayment()}>Check Razorpay payment</button>
       </div>}
       {order.refundFailed&&<p className="muted">Razorpay reported a failed refund. The store needs to review it.</p>}
       {order.refundPending&&!order.refundFailed&&<p className="muted">Razorpay refund pending confirmation.</p>}
@@ -289,10 +426,12 @@ export function OrderView({orderId,onClose,account,shop,local=false,extra,reorde
       {account.role==='owner'&&order.canReconcilePayment&&<button className="button secondary" disabled={busy} onClick={()=>void checkPayment()}>Check Razorpay payment</button>}
       {extra?.(order,refresh)}
       {account.role!=='rider'&&order.status!=='awaiting_payment'&&<div className="actions">
-        {['completed','placed','accepted','packing','ready','out_for_delivery'].includes(order.status)&&<button className="button secondary" onClick={()=>void operate(()=>invoice(order),'Bill downloaded.')}><FileDown size={16}/> Download bill</button>}
+        {(order.payment_status==='paid'||order.payment_status==='refunded'||order.payment_status==='cash_collected'||
+          ['completed','placed','accepted','packing','ready','out_for_delivery'].includes(order.status))&&
+          <button className="button secondary" onClick={()=>void operate(()=>invoice(order,local),'Invoice downloaded.')}><FileDown size={16}/> Download invoice</button>}
         {reorder&&<button className="button secondary" onClick={()=>void operate(()=>reorder(order.items),'Available items added to your basket.')}>Order again</button>}
       </div>}
-      {order.events.length>0&&<section><b>Order activity</b><ol className="timeline">{order.events.map((e,i)=><li key={i}><Check size={14}/><div><strong>{pretty(e.status)}</strong><small>{new Date(e.created_at*1000).toLocaleString('en-IN',{timeZone:'Asia/Kolkata'})}{e.note?' · '+e.note:''}</small></div></li>)}</ol></section>}
+      {customer?<OrderTracking order={order}/>:order.events.length>0&&<section><b>Order activity</b><ol className="timeline">{order.events.map((e,i)=><li key={i}><Check size={14}/><div><strong>{pretty(e.status)}</strong><small>{timestamp(e.created_at)}{e.note?' · '+e.note:''}</small></div></li>)}</ol></section>}
       {!!order.cases.length&&<section className="stack compact"><b>Support requests</b>{order.cases.map(k=><div className="info-box" key={k.id}><span><b>{pretty(k.kind)} · {pretty(k.status)}</b><small>{k.reason}{k.response?' · '+k.response:''}</small></span></div>)}</section>}
       {!!order.refunds.length&&<p className="muted">Refunded {rupee(order.refunds.reduce((sum,x)=>sum+x.amount,0))}</p>}
       {account.role==='customer'&&<form className="stack compact" onSubmit={e=>{e.preventDefault();void operate(async()=>{await send('/orders/'+orderId+'/cases',{kind,reason});setKind('');setReason('')},'Request sent to the store.')}}>
