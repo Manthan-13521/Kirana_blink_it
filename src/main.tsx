@@ -47,7 +47,7 @@ function App(){
   const [view,setView]=useState(pathView),[query,setQuery]=useState(''),[modal,setModal]=useState<Modal>(null)
   const [loginRole,setLoginRole]=useState<'customer'|'owner'|'rider'>('customer')
   const [cart,setCart]=useState<CartLine[]>([]),[cartOpen,openCart]=useState(false),[order,setOrder]=useState<string|null>(null)
-  const [resumeCheckout,setResumeCheckout]=useState(false),[paymentReview,setPaymentReview]=useState(false)
+  const [resumeCheckout,setResumeCheckout]=useState(false)
   const checkoutIntent=useRef(false)
   const cartChanged=useRef(false)
   const cartCount=cart.reduce((count,line)=>count+line.steps,0)
@@ -59,13 +59,12 @@ function App(){
       const checkout=url.searchParams.get('checkout')==='resume'&&me.account?.role==='customer'
       const signedIn=checkout||url.searchParams.get('signin')==='complete'
       const basket=await loadBasket(me.account,signedIn,checkout)
-      const orderId=url.searchParams.get('order'),review=url.searchParams.get('payment')==='review'
-      if(signedIn||orderId||review){
-        for(const key of ['checkout','signin','order','payment'])url.searchParams.delete(key)
+      const orderId=url.searchParams.get('order')
+      if(signedIn||orderId){
+        for(const key of ['checkout','signin','order'])url.searchParams.delete(key)
         history.replaceState({},'',url)
       }
       if(orderId&&me.account?.role==='customer'&&/^[0-9a-f-]{36}$/.test(orderId))setOrder(orderId)
-      if(review)setPaymentReview(true)
       cartChanged.current=basket.changed
       if(basket.changed)clearGuestBasket()
       setAccount(me.account);setCart(basket.lines);setReady(true)
@@ -164,7 +163,6 @@ function App(){
     {modal==='orders'&&account&&<Sheet title="Order history" onClose={()=>setModal(null)} wide><OrderList open={id=>{setModal(null);setOrder(id)}}/></Sheet>}
     {modal==='location'&&<Location shop={shop} account={account} onClose={()=>setModal(null)} signIn={()=>signIn('customer')}/>}
     {modal==='notices'&&account&&<Notices customer={account?.role==='customer'} local={local} close={()=>setModal(null)} open={id=>{setModal(null);setOrder(id)}}/>}
-    {paymentReview&&<Sheet title="Check payment status" onClose={()=>setPaymentReview(false)}><p>Open your order history to check whether Razorpay confirmed your payment before trying again.</p></Sheet>}
     {order&&account&&<OrderView local={local} orderId={order} onClose={()=>setOrder(null)} account={account} shop={shop} reorder={account.role==='customer'?reorder:undefined}/>}
   </div>
 }

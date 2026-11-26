@@ -7,11 +7,12 @@ import { routing } from './routing'
 import { push } from './push'
 import { capacity } from './capacity'
 import { razorpay } from './razorpay'
-import { checkoutPayments,runPaymentMaintenance } from './checkout-payments'
-import { testCredentials } from './payment-provider'
+import { runPaymentMaintenance } from './checkout-payments'
+import { checkoutPayments } from './standard-checkout'
+import { checkoutCredentials } from './payment-provider'
 import { jpegMime,mediaFileId,webpMime } from './media-format'
 import { googleAuth } from './google-auth'
-import { all,audit,coordinate,digest,errorMap,I,id,json,localhost,now,one,onlineOrderingAvailable,parseLines,Problem,role,S,services,shop,statement,token } from './shared'
+import { all,audit,checkoutAccess,coordinate,digest,errorMap,I,id,json,localhost,now,one,onlineOrderingAvailable,parseLines,Problem,role,S,services,shop,statement,token } from './shared'
 import type { Account,Address,Env } from './shared'
 
 const COOKIE='kirana_session'
@@ -29,7 +30,7 @@ export function application(localRoutes?:Hono<Env>) {
   app.use('*',async(c,next)=>{
     await next()
     c.header('X-Content-Type-Options','nosniff')
-    c.header('Referrer-Policy',(c.req.path.startsWith('/api/auth/google')||c.req.path.startsWith('/api/payments/return/'))?'no-referrer':'strict-origin-when-cross-origin')
+    c.header('Referrer-Policy',c.req.path.startsWith('/api/auth/google')?'no-referrer':'strict-origin-when-cross-origin')
     c.header('X-Frame-Options','DENY')
   })
   api.use('*',bodyLimit({maxSize:96*1024,onError:c=>c.json({error:'Request is too large.'},413)}))
@@ -61,7 +62,7 @@ export function application(localRoutes?:Hono<Env>) {
   api.get('/store',async c=>{
     if(!localhost(c)&&!(c.env.APP_MODE==='staging'&&c.env.STAGING_CHECKOUT_EMAILS))c.header('Cache-Control','public, max-age=20')
     const settings=await publicSettings(c.env.DB)
-    return c.json({settings:{...settings,enable_online:Number(settings.enable_online&&(localhost(c)||Boolean(testCredentials(c.env)))),accepting:Number((c.env.APP_MODE!=='staging'||c.get('stagingCheckout'))&&onlineOrderingAvailable(settings))},local:localhost(c)})
+    return c.json({settings:{...settings,enable_online:Number(settings.enable_online&&(localhost(c)||Boolean(checkoutCredentials(c.env)))),accepting:Number(checkoutAccess(c)&&onlineOrderingAvailable(settings))},local:localhost(c)})
   })
   api.get('/me',c=>c.json({account:c.get('account')??null,local:localhost(c)}))
   api.post('/auth/logout',async c=>{

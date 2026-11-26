@@ -14,6 +14,7 @@ const temporary=destination+'.'+randomUUID()+'.tmp'
 let file
 try {
   const provider=Boolean(db.prepare("SELECT 1 FROM sqlite_schema WHERE name='order_provider_refunds'").get())
+  const checkout=Boolean(db.prepare("SELECT 1 FROM sqlite_schema WHERE name='order_checkout_payments'").get())
   db.exec('CREATE TEMP TABLE selected(id TEXT PRIMARY KEY) WITHOUT ROWID; BEGIN')
   db.prepare(`INSERT INTO selected
     SELECT o.id FROM orders o WHERE o.updated_at<?
@@ -32,7 +33,7 @@ try {
     digest.update(line)
   }
   record({format:'kirana-local-archive-v1',cutoff,orders:count})
-  for(const table of ['orders','order_items','order_events','stock_events','cases','refunds',...(provider?['order_payment_links','order_provider_refunds']:[])]){
+  for(const table of ['orders','order_items','order_events','stock_events','cases','refunds',...(provider?['order_payment_links','order_provider_refunds']:[]),...(checkout?['order_checkout_payments']:[])]){
     const key=table==='orders'?'id':'order_id'
     const rows=db.prepare(`SELECT data.* FROM ${table} AS data JOIN selected ON selected.id=data.${key}`).iterate()
     for(const row of rows)record({table,row})

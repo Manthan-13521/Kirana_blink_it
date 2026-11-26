@@ -262,7 +262,7 @@ function Setup({shop,refresh}:{shop:Shop;refresh:()=>Promise<void>}){
           {numeric('delivery_capacity','Home deliveries per window',1,100)}{numeric('pickup_capacity','Store pickups per window',1,250)}</div>
       </>}
       {step===2&&<div className="form-grid">{numeric('minimum_order','Minimum order (₹)',0,100000,'.01',true)}{numeric('delivery_fee','Delivery fee (₹)',0,1000,'.01',true)}{numeric('free_delivery','Free delivery threshold (₹)',0,100000,'.01',true)}
-        {field('gstin','GSTIN')}{check('registered','GST registered')}{check('enable_cod','Enable cash payments')}{check('enable_online','Enable local test online payments')}
+        {field('gstin','GSTIN')}{check('registered','GST registered')}{check('enable_cod','Enable cash payments')}{check('enable_online','Enable online payments')}
         <label className="span-full">Store policy<textarea rows={5} value={value.policy} onChange={e=>change('policy',e.target.value)} maxLength={1000}/></label></div>}
       <div className="actions"><button className="button primary" disabled={busy||!loaded}>Save settings</button>{step<2&&<button type="button" className="button secondary" onClick={()=>setStep(step+1)}>Next step <ArrowRight size={16}/></button>}</div>
     </form>

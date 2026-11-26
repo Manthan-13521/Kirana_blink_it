@@ -1,4 +1,4 @@
-import { useEffect,useId,useRef } from 'react'
+import { useId,useLayoutEffect,useRef } from 'react'
 import type { ReactNode } from 'react'
 import { ChevronRight, CircleAlert, CircleCheck, Package, ShoppingBasket, X } from 'lucide-react'
 import { pretty } from './lib'
@@ -6,10 +6,10 @@ import { pretty } from './lib'
 export function Mark({name='Neighbourhood Kirana'}:{name?:string}){
   return <span className="wordmark"><span className="logo-mark"><ShoppingBasket size={23} strokeWidth={2.4}/></span><span>{name}</span></span>
 }
-export function Sheet({title,children,onClose,wide=false}:{title:string;children:ReactNode;onClose:()=>void;wide?:boolean}){
+export function Sheet({title,children,onClose,wide=false,suspended=false}:{title:string;children:ReactNode;onClose:()=>void;wide?:boolean;suspended?:boolean}){
   const dialog=useRef<HTMLDialogElement>(null)
   const titleId=useId()
-  useEffect(()=>{const node=dialog.current;node?.showModal();return()=>node?.close()},[])
+  useLayoutEffect(()=>{const node=dialog.current;if(!suspended&&!node?.open)node?.showModal();return()=>node?.close()},[suspended])
   return <dialog ref={dialog} aria-labelledby={titleId} className={'sheet '+(wide?'sheet-wide':'')} onCancel={e=>{e.preventDefault();onClose()}} onClick={e=>{if(e.target===e.currentTarget)onClose()}}>
     <header className="sheet-header"><h2 id={titleId}>{title}</h2><button className="icon-button" type="button" aria-label="Close" onClick={onClose}><X size={21}/></button></header>
     <div className="sheet-body">{children}</div>

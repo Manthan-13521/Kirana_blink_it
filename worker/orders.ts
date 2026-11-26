@@ -1,8 +1,8 @@
 import { Hono } from 'hono'
-import { queueOrderRefund } from './checkout-payments'
+import { queueOrderRefund,refundSelect } from './checkout-payments'
 import { queuePush } from './push'
-import { testCredentials } from './payment-provider'
-import { all,audit,authorizeOrder,availableSlot,configuredSlot,digest,errorMap,fulfillmentEnabled,I,id,json,now,one,onlineOrderingAvailable,order,parseLines,Problem,publicOrderFields,role,S,services,shop,shopDayStart,slots,statement,localhost } from './shared'
+import { checkoutCredentials,paymentCredentials } from './payment-provider'
+import { all,audit,authorizeOrder,availableSlot,checkoutAccess,configuredSlot,digest,errorMap,fulfillmentEnabled,I,id,json,now,one,onlineOrderingAvailable,order,parseLines,Problem,publicOrderFields,role,S,services,shop,shopDayStart,slots,statement,localhost } from './shared'
 import type { Address, Ctx, Env, Order, Product } from './shared'
 
 export const orders = new Hono<Env>()
@@ -14,7 +14,7 @@ const calculatedTax = (total:number,bps:number)=>Math.round(total*bps/(10000+bps
 async function quote(c:Ctx, data:Record<string,unknown>, pos:boolean, placing=false) {
   const account=role(c,...(pos?['owner','staff'] as const:['customer'] as const))
   const db=c.env.DB
-  if(!pos&&c.env.APP_MODE==='staging'&&!c.get('stagingCheckout')) throw new Problem(503,'This storefront is a preview. Online orders are closed.')
+  if(!pos&&!checkoutAccess(c)) throw new Problem(503,'This storefront is a preview. Online orders are closed.')
   const input=parseLines(data.items)
   const { fulfillment, method } = data
   if (pos?fulfillment!=='counter':(fulfillment!=='pickup'&&fulfillment!=='delivery')) throw new Problem(400,'Invalid fulfillment method.')
@@ -25,7 +25,7 @@ async function quote(c:Ctx, data:Record<string,unknown>, pos:boolean, placing=fa
     throw new Problem(409,fulfillment==='delivery'?'Home delivery is temporarily unavailable.':'Store pickup is temporarily unavailable.','fulfillment_unavailable')
   }
   if (!pos && (method==='online'?!config.enable_online:!config.enable_cod)) throw new Problem(409,'That payment method is unavailable.')
-  if (!pos && method==='online' && !localhost(c) && !testCredentials(c.env)) throw new Problem(503,'Online payment provider has not been configured.')
+  if (!pos && method==='online' && !localhost(c) && !checkoutCredentials(c.env)) throw new Problem(503,'Online payment provider has not been configured.')
   const products=await all<Product>(db,`SELECT id,sku,name,unit,step,price,stock,min_steps,max_steps,tax_bps,hsn FROM products WHERE id IN (${input.map(()=>'?').join(',')}) AND active=1 AND (expiry IS NULL OR expiry>=date('now','+330 minutes'))`, ...input.map(i=>i.id))
   const byId=new Map(products.map(p=>[p.id,p]))
   const items=input.map(({id,steps})=>{
@@ -56,7 +56,7 @@ async function quote(c:Ctx, data:Record<string,unknown>, pos:boolean, placing=fa
   }
   const fees=fulfillment==='delivery'&&subtotal<config.free_delivery?config.delivery_fee:0
   const note=S(data.note??'','note',280,false)
-  if(method==='online'&&!localhost(c)&&subtotal+fees<100)throw new Problem(409,'Razorpay Test Mode requires a total of at least ₹1.')
+  if(method==='online'&&!localhost(c)&&subtotal+fees<100)throw new Problem(409,'Razorpay requires a total of at least ₹1.')
   const version=await digest(JSON.stringify({revision:config.revision,items:items.map(i=>[i.id,i.quantity,i.item.price,i.tax]),subtotal,fees,tax,fulfillment,method,address,slot:slot?.start,note}))
   return {config,items,subtotal,tax,fees,total:subtotal+fees,address,slot,fulfillment,method,note,version,account}
 }
@@ -107,7 +107,7 @@ orders.post('/pos', c=>create(c,true))
 orders.get('/slots',async c=>{
   const key=c.req.query('mode')
   if(key!=='pickup'&&key!=='delivery') throw new Problem(400,'Select delivery or store pickup.')
-  if(c.env.APP_MODE==='staging'&&!c.get('stagingCheckout'))return c.json([])
+  if(!checkoutAccess(c))return c.json([])
   return c.json(await slots(c.env.DB,await shop(c.env.DB),key))
 })
 orders.get('/orders',async c=>{
@@ -137,16 +137,21 @@ orders.get('/orders/:id',async c=>{
   const account=role(c,'customer','owner','staff','rider'), db=c.env.DB
   const row=await order(db,c.req.param('id'));authorizeOrder(account,row)
   const canAccessContact=account.role!=='rider'||!terminal.has(row.status)
-  const [items,events,cases,refunds,pendingRefund]=await Promise.all([
+  const [items,events,cases,refunds,pendingRefunds,paymentAttempt]=await Promise.all([
     all(db,'SELECT * FROM order_items WHERE order_id=? ORDER BY product_id',row.id),
     all(db,'SELECT status,note,created_at FROM order_events WHERE order_id=? ORDER BY id',row.id),
     account.role==='rider'?[]:all(db,'SELECT id,kind,reason,response,status,created_at FROM cases WHERE order_id=? ORDER BY created_at DESC',row.id),
     account.role==='rider'?[]:all(db,'SELECT amount,created_at FROM refunds WHERE order_id=? ORDER BY created_at DESC',row.id),
-    account.role!=='rider'&&c.env.APP_MODE==='staging'&&row.payment_method==='online'&&row.payment_status==='paid'
-      ?one(db,"SELECT 1 FROM order_provider_refunds WHERE order_id=? AND status<>'processed' LIMIT 1",row.id):null,
+    account.role!=='rider'&&!localhost(c)&&row.payment_method==='online'&&row.payment_status==='paid'
+      ?all<{id:string;amount:number;status:string;failed_at:number|null;mode:string}>(db,`${refundSelect} WHERE r.order_id=? AND r.status<>'processed' ORDER BY r.created_at LIMIT 25`,row.id):[],
+    !localhost(c)&&row.payment_method==='online'&&(account.role==='customer'&&row.status==='awaiting_payment'||
+      account.role==='owner'&&['unpaid','void'].includes(row.payment_status))
+      ?one<{failed_at:number|null;provider_order_id:string|null}>(db,'SELECT failed_at,provider_order_id FROM order_checkout_payments WHERE order_id=?',row.id):null,
   ])
+  const liveRefunds=account.role==='owner'&&c.env.RAZORPAY_LIVE_REFUNDS==='enabled'
+    ?pendingRefunds.filter(r=>r.mode==='live'&&!r.failed_at).map(({id,amount,status})=>({id,amount,status})):undefined
   const sanitized=Object.fromEntries(publicOrderFields.split(',').map(k=>[k,row[k as keyof Order]]))
-  return c.json({...sanitized,address:canAccessContact&&row.address_json?JSON.parse(row.address_json):null,invoice:account.role==='rider'?null:JSON.parse(row.billing_json),assigned_to:row.assigned_to,items,events,cases,refunds,refundPending:Boolean(pendingRefund)})
+  return c.json({...sanitized,address:canAccessContact&&row.address_json?JSON.parse(row.address_json):null,invoice:account.role==='rider'?null:JSON.parse(row.billing_json),assigned_to:row.assigned_to,items,events,cases,refunds,refundPending:Boolean(pendingRefunds.length),refundFailed:pendingRefunds.some(r=>Boolean(r.failed_at)),paymentFailed:Boolean(paymentAttempt?.failed_at),canReconcilePayment:account.role==='owner'&&Boolean(paymentAttempt?.provider_order_id),liveRefunds})
 })
 
 const ownerTransitions: Record<string,string[]> = {
@@ -169,7 +174,7 @@ orders.post('/orders/:id/state',async c=>{
   const dismiss=release.has(next)
   const reason=S(data.reason??'','reason',280,false)
   if(dismiss&&row.payment_status==='paid'&&!localhost(c)){
-    if(!testCredentials(c.env))throw new Problem(503,'Refund provider is not configured.')
+    if(!paymentCredentials(c.env))throw new Problem(503,'Refund provider is not configured.')
     await queueOrderRefund(db,row,account.id,{caseId:null,amount:row.total,cancel:next==='rejected'?'rejected':'cancelled',response:reason})
     queuePush(c,row.account_id,next)
     return c.json({ok:true,refund:'pending'})
@@ -259,7 +264,7 @@ orders.post('/admin/cases/:id',async c=>{
     if(amount) throw new Problem(400,'Cancellation calculates any refund automatically.')
     if(!['placed','accepted','packing','ready'].includes(row.status)) throw new Problem(409,'That order can no longer be cancelled.')
     if(row.payment_status==='paid'&&!localhost(c)){
-      if(!testCredentials(c.env))throw new Problem(503,'Refund provider is not configured.')
+      if(!paymentCredentials(c.env))throw new Problem(503,'Refund provider is not configured.')
       await queueOrderRefund(db,row,account.id,{caseId,amount:row.total,cancel:'cancelled',response})
       queuePush(c,row.account_id,'cancelled')
       return c.json({ok:true,refund:'pending'})
@@ -284,7 +289,7 @@ orders.post('/admin/cases/:id',async c=>{
     throw new Problem(409,'Reconcile the rider cash collection before recording a refund.')
   }
   if(amount&&row.payment_method==='online'&&!localhost(c)){
-    if(!testCredentials(c.env))throw new Problem(503,'Refund provider is not configured.')
+    if(!paymentCredentials(c.env))throw new Problem(503,'Refund provider is not configured.')
     await queueOrderRefund(db,row,account.id,{caseId,amount,response})
     return c.json({ok:true,refund:'pending'})
   }

@@ -21,6 +21,19 @@ if(googleOrigin!==undefined){
   assert.equal(url.protocol,'https:')
   assert.equal(url.origin,googleOrigin,'Google origin must be an HTTPS origin without a trailing slash.')
 }
+const razorpayMode=config.razorpayMode??'test'
+assert.ok(['test','live'].includes(razorpayMode),'Use test or live Razorpay mode.')
+for(const flag of ['publicCheckout','razorpayLiveCheckout','razorpayLiveRefunds']){
+  assert.ok(config[flag]===undefined||typeof config[flag]==='boolean',flag+' must be a boolean.')
+}
+assert.ok(!config.publicCheckout||mode==='production','Staging never enables public checkout.')
+assert.ok(razorpayMode==='live'||!config.razorpayLiveCheckout&&!config.razorpayLiveRefunds,'Live controls require live Razorpay mode.')
+const paymentVars={
+  RAZORPAY_MODE:razorpayMode,
+  PUBLIC_CHECKOUT:config.publicCheckout?'enabled':'disabled',
+  RAZORPAY_LIVE_CHECKOUT:config.razorpayLiveCheckout?'enabled':'disabled',
+  RAZORPAY_LIVE_REFUNDS:config.razorpayLiveRefunds?'enabled':'disabled',
+}
 const staticMediaOrigin=config.staticMediaOrigin
 if(staticMediaOrigin!==undefined)assert.equal(staticMediaOrigin,'https://'+config.mediaProject+'.pages.dev',
   'Use the dedicated Pages media hostname for static image delivery.')
@@ -60,11 +73,11 @@ const configWriter=(file,value)=>writeFile(join(root,file),JSON.stringify(value,
 await Promise.all([
   writeFile(join(root,'worker','initialize-store.sql'),seed),
   configWriter('worker/wrangler.json',{name:workerName,main:'worker/production.ts',compatibility_date:'2026-10-01',workers_dev:false,
-    vars:{APP_MODE:mode,...(googleOrigin?{GOOGLE_ORIGIN:googleOrigin}:{}),...(staticMediaOrigin?{MEDIA_STATIC_ORIGIN:staticMediaOrigin}:{})},preview_urls:false,
+    vars:{APP_MODE:mode,...paymentVars,...(googleOrigin?{GOOGLE_ORIGIN:googleOrigin}:{}),...(staticMediaOrigin?{MEDIA_STATIC_ORIGIN:staticMediaOrigin}:{})},preview_urls:false,
     d1_databases:[{binding:'DB',database_id:ids[0],database_name:config.slug+'-orders',migrations_dir:'migrations'},{binding:'MEDIA',database_id:ids[1],database_name:config.slug+'-media',migrations_dir:'media-migrations'}],
     triggers:{crons:['*/10 * * * *']}}),
   configWriter('pages/wrangler.json',{name:config.frontendProject,pages_build_output_dir:'dist',compatibility_date:'2026-10-01',services:[{binding:'KIRANA_API',service:workerName}]}),
   configWriter('pages/dist/_routes.json',{version:1,include:['/api/*','/media/*'],exclude:[]}),
-  configWriter('release-manifest.json',{mode,store:config.slug,mediaProject:config.mediaProject,archiveD1:config.archiveDatabaseIds,requiredIntegrations:['Google authentication','Razorpay test and webhook verification','Pages image publishing','permitted routing','Web Push','archive and hosted load checks']}),
+  configWriter('release-manifest.json',{mode,store:config.slug,mediaProject:config.mediaProject,archiveD1:config.archiveDatabaseIds,requiredIntegrations:['Google authentication','Razorpay Standard Checkout and webhook verification','Pages image publishing','permitted routing','Web Push','archive and hosted load checks']}),
 ])
 console.log('Prepared local review files with demo seed and mock mode excluded.')

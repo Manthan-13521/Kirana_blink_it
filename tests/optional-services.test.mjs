@@ -183,7 +183,7 @@ test('Google workspaces enforce email-bound team invitations, single rider and r
 })
 
 test('Razorpay only settles matching captures and atomically queues late or owner refunds',async t=>{
-  const {applyOrderPaymentEvent,queueOrderRefund}=await import('../worker/checkout-payments.ts')
+  const {applyOrderPaymentEvent,applyRefundEvent,queueOrderRefund}=await import('../worker/checkout-payments.ts')
   const {sqlite,db}=await integrationFixture(t)
   const timely='11111111-1111-4111-8111-111111111111',late='22222222-2222-4222-8222-222222222222',time=1800000000
   for(const [id,link] of [[timely,'plink_timely123'],[late,'plink_late123']]){
@@ -213,14 +213,178 @@ test('Razorpay only settles matching captures and atomically queues late or owne
   const refund=(id,key,payment,amount)=>({event:'refund.processed',payload:{
     refund:{entity:{id,amount,payment_id:payment,notes:{kirana_refund:key}}},
   }})
-  await applyOrderPaymentEvent(db,refund('rfnd_cancel123','cancel-'+timely,'pay_timely123',4200),time)
+  await applyRefundEvent(db,'refund.processed',refund('rfnd_cancel123','cancel-'+timely,'pay_timely123',4200).payload.refund.entity,'test',time)
   assert.equal(row(timely).payment_status,'paid')
-  await applyOrderPaymentEvent(db,refund('rfnd_cancel123','cancel-'+timely,'pay_timely123',4300),time)
-  await applyOrderPaymentEvent(db,refund('rfnd_cancel123','cancel-'+timely,'pay_timely123',4300),time)
+  await applyRefundEvent(db,'refund.processed',refund('rfnd_cancel123','cancel-'+timely,'pay_timely123',4300).payload.refund.entity,'test',time)
+  await applyRefundEvent(db,'refund.processed',refund('rfnd_cancel123','cancel-'+timely,'pay_timely123',4300).payload.refund.entity,'test',time)
   assert.equal(row(timely).payment_status,'refunded')
   assert.equal(sqlite.prepare('SELECT COUNT(*) as n FROM refunds WHERE order_id=?').get(timely).n,1)
   await applyOrderPaymentEvent(db,capture(late,'plink_late123','pay_late123',4300),time+401)
   assert.equal(row(late).status,'cancelled')
   assert.equal(row(late).slot_retained,0)
   assert.equal(pending(late),1)
+})
+
+test('Standard Checkout flags require matching modes and explicit live collection approval',async()=>{
+  const {paymentCredentials,checkoutCredentials,testCredentials}=await import('../worker/payment-provider.ts')
+  const base={APP_MODE:'staging',RAZORPAY_KEY_SECRET:'fixture',RAZORPAY_WEBHOOK_SECRET:'fixture'}
+  const live={...base,RAZORPAY_KEY_ID:'rzp_live_Fixture'}
+  assert.equal(paymentCredentials(live),null)
+  const optedIn={...live,RAZORPAY_MODE:'live'}
+  assert.equal(paymentCredentials(optedIn).mode,'live')
+  assert.equal(checkoutCredentials(optedIn),null)
+  assert.equal(testCredentials({...optedIn,RAZORPAY_LIVE_CHECKOUT:'enabled'}),null)
+  assert.equal(checkoutCredentials({...optedIn,RAZORPAY_LIVE_CHECKOUT:'enabled'}).mode,'live')
+  assert.equal(checkoutCredentials({...optedIn,APP_MODE:'local',RAZORPAY_LIVE_CHECKOUT:'enabled'}),null)
+  assert.equal(checkoutCredentials({...base,RAZORPAY_KEY_ID:'rzp_test_Fixture'}).mode,'test')
+})
+
+test('Standard Checkout retries one provider order and accepts only matching captured payment',async t=>{
+  const {Hono}=await import('hono')
+  const {checkoutPayments}=await import('../worker/standard-checkout.ts')
+  const {sqlite,db}=await integrationFixture(t)
+  const orderId='33333333-3333-4333-8333-333333333333',providerId='order_fixture123',paymentId='pay_fixture123'
+  const time=Math.floor(Date.now()/1000),secret='synthetic-checkout-secret'
+  seedPending(sqlite,orderId,time)
+  sqlite.exec('UPDATE settings SET enable_online=1')
+  const app=new Hono()
+  app.use('*',async(c,next)=>{
+    c.set('account',{id:c.req.header('x-fixture-account')??'demo-customer',role:'customer',name:'Synthetic',phone:''})
+    c.set('stagingCheckout',c.req.header('x-fixture-preview')==='yes')
+    await next()
+  })
+  app.onError((error,c)=>c.json({error:error.message},error.status??500))
+  app.route('/',checkoutPayments)
+  const env={DB:db,APP_MODE:'staging',RAZORPAY_KEY_ID:'rzp_test_Fixture',RAZORPAY_KEY_SECRET:secret,RAZORPAY_WEBHOOK_SECRET:'synthetic-wh-secret'}
+  const providerOrder={id:providerId,receipt:orderId,amount:4300,currency:'INR',status:'created'}
+  let creates=0,retrieves=0,paymentStatus='authorized',recover=false,readAmount=4300
+  const original=globalThis.fetch
+  t.after(()=>{globalThis.fetch=original})
+  globalThis.fetch=async (url,init)=>{
+    const path=new URL(url)
+    assert.equal(path.origin,'https://api.razorpay.com')
+    if(path.pathname==='/v1/orders'&&init.method==='POST'){
+      creates++
+      assert.deepEqual(JSON.parse(init.body),{amount:4300,currency:'INR',receipt:orderId,partial_payment:false})
+      return new Response(null,{status:503})
+    }
+    if(path.pathname==='/v1/orders'&&path.searchParams.get('receipt')===orderId){
+      retrieves++
+      assert.ok(recover)
+      return Response.json({items:[providerOrder]})
+    }
+    assert.equal(path.pathname,'/v1/payments/'+paymentId)
+    return Response.json({id:paymentId,order_id:providerId,amount:readAmount,currency:'INR',status:paymentStatus})
+  }
+  const post=(suffix='',body={},headers={'x-fixture-preview':'yes'})=>app.request('/orders/'+orderId+'/payment'+suffix,
+    {method:'POST',headers:{...headers,'content-type':'application/json'},body:JSON.stringify(body)},env)
+  assert.equal((await post('',{},{})).status,503)
+  assert.equal((await post('',{}, {'x-fixture-preview':'yes','x-fixture-account':'another-account'})).status,404)
+  sqlite.exec('UPDATE settings SET enable_pickup=0')
+  assert.equal((await post()).status,409)
+  assert.equal(creates,0)
+  sqlite.exec('UPDATE settings SET enable_pickup=1')
+  assert.equal((await post()).status,503)
+  assert.equal((await post()).status,409)
+  assert.equal(creates,1)
+  assert.equal(retrieves,0)
+  recover=true
+  sqlite.exec('UPDATE order_checkout_payments SET next_create_at=0')
+  const [challenge,repeat]=await Promise.all([post(),post()])
+  assert.deepEqual([challenge.status,repeat.status].sort(),[200,409])
+  assert.equal(creates,1)
+  assert.equal(retrieves,1)
+  assert.equal((await post()).status,200)
+  const signature=createHmac('sha256',secret).update(providerId+'|'+paymentId).digest('hex')
+  const proof={razorpay_order_id:providerId,razorpay_payment_id:paymentId,razorpay_signature:signature}
+  assert.equal((await post('/verify',{...proof,razorpay_order_id:'order_other123'})).status,403)
+  assert.equal((await post('/verify',{...proof,razorpay_signature:'0'.repeat(64)})).status,403)
+  readAmount=4400
+  assert.equal((await post('/verify',proof)).status,403)
+  readAmount=4300
+  assert.equal((await post('/verify',proof)).status,202)
+  assert.equal(sqlite.prepare('SELECT status FROM orders WHERE id=?').get(orderId).status,'awaiting_payment')
+  paymentStatus='captured'
+  assert.deepEqual(await (await post('/verify',proof)).json(),{state:'confirmed'})
+  assert.deepEqual(await (await post('/verify',proof)).json(),{state:'confirmed'})
+  assert.equal((await post('/cancel')).status,409)
+})
+
+function seedPending(db,id,time){
+  db.exec("UPDATE products SET price=4300,mrp=4300 WHERE id='tomato'")
+  db.prepare(`INSERT INTO orders(id,account_id,request_key,request_fingerprint,channel,fulfillment,status,payment_method,payment_status,
+    subtotal,fees,total,tax,slot_start,slot_end,billing_json,created_at,updated_at,config_revision)
+    VALUES(?,'demo-customer',?,'fixture','online','pickup','awaiting_payment','online','unpaid',4300,0,4300,0,?,?, '{}',?,?,(SELECT revision FROM settings WHERE id=1))`)
+    .run(id,id,time+900,time+3600,time-500,time-500)
+  db.prepare(`INSERT INTO order_items(order_id,product_id,sku,name,unit,step,quantity,price,line_total,tax,tax_bps,hsn)
+    SELECT ?,id,sku,name,unit,step,step,price,price,0,tax_bps,hsn FROM products WHERE id='tomato'`).run(id)
+}
+
+test('live webhooks record retries, late captures and refund lifecycle without moving money',async t=>{
+  const {applyStandardEvent}=await import('../worker/standard-checkout.ts')
+  const {runPaymentMaintenance,queueOrderRefund}=await import('../worker/checkout-payments.ts')
+  const {sqlite,db}=await integrationFixture(t)
+  const credentials={mode:'live',key:'rzp_live_Fixture',secret:'fixture',webhook:'fixture'}
+  const orderId='44444444-4444-4444-8444-444444444444',lateId='55555555-5555-4555-8555-555555555555',time=1800000000
+  const initial=sqlite.prepare("SELECT stock FROM products WHERE id='tomato'").get().stock
+  for(const [id,provider] of [[orderId,'order_active123'],[lateId,'order_late123']]){
+    seedPending(sqlite,id,time)
+    sqlite.prepare('INSERT INTO order_checkout_payments(order_id,provider_order_id,mode,expires_at) VALUES(?,?,?,?)')
+      .run(id,provider,'live',time+400)
+  }
+  const row=id=>sqlite.prepare('SELECT * FROM orders WHERE id=?').get(id)
+  const intent=id=>sqlite.prepare('SELECT * FROM order_checkout_payments WHERE order_id=?').get(id)
+  const payment=(event,id,provider,status)=>({event,payload:{
+    payment:{entity:{id,order_id:provider,status,amount:4300,currency:'INR'}},order:{entity:{id:provider,status:'paid'}},
+  }})
+  const apply=(event,at=time,config=credentials)=>applyStandardEvent(db,event,config,at)
+  const failed=payment('payment.failed','pay_retry123','order_active123','failed')
+  await apply(failed);await apply(failed,time+1)
+  assert.equal(intent(orderId).failed_at,time)
+  assert.equal(row(orderId).status,'awaiting_payment')
+  assert.equal(row(orderId).stocked,1)
+  const paid=payment('order.paid','pay_active123','order_active123','captured')
+  await apply(paid,time,{...credentials,mode:'test'})
+  assert.equal(row(orderId).status,'awaiting_payment')
+  await apply(paid);await apply({...paid,event:'payment.captured'})
+  assert.equal(row(orderId).status,'placed')
+  assert.equal(intent(orderId).payment_id,'pay_active123')
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM order_events WHERE order_id=? AND status=?').get(orderId,'placed').n,1)
+  const late=payment('payment.captured','pay_late123','order_late123','captured')
+  await apply(late,time+401);await apply(late,time+402)
+  assert.equal(row(lateId).status,'cancelled')
+  assert.equal(row(lateId).stocked,0)
+  assert.equal(row(lateId).slot_retained,0)
+  assert.equal(sqlite.prepare("SELECT stock FROM products WHERE id='tomato'").get().stock,initial-
+    sqlite.prepare("SELECT step FROM products WHERE id='tomato'").get().step)
+  const lateJob='late-'+lateId
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM order_provider_refunds WHERE id=?').get(lateJob).n,1)
+  sqlite.exec(`UPDATE orders SET status='completed' WHERE id='${orderId}'`)
+  const caseId='66666666-6666-4666-8666-666666666666'
+  sqlite.prepare("INSERT INTO cases(id,order_id,kind,reason,created_at,updated_at) VALUES(?,?,'refund','fixture',?,?)").run(caseId,orderId,time,time)
+  await queueOrderRefund(db,row(orderId),'demo-owner',{caseId,amount:1000})
+  const original=globalThis.fetch
+  t.after(()=>{globalThis.fetch=original})
+  globalThis.fetch=async()=>{throw new Error('Live cron must not make a Razorpay request.')}
+  await runPaymentMaintenance({DB:db,APP_MODE:'staging',RAZORPAY_MODE:'live',RAZORPAY_LIVE_REFUNDS:'enabled',
+    RAZORPAY_KEY_ID:credentials.key,RAZORPAY_KEY_SECRET:credentials.secret,RAZORPAY_WEBHOOK_SECRET:credentials.webhook})
+  assert.equal(sqlite.prepare('SELECT status FROM order_provider_refunds WHERE id=?').get(lateJob).status,'queued')
+  const refund=(name,id,job,paymentId,amount)=>apply({event:name,payload:{refund:{entity:{
+    id,payment_id:paymentId,amount,notes:{kirana_refund:job},
+  }}}})
+  const args=['rfnd_active123',caseId,'pay_active123',1000]
+  await refund('refund.created',...args)
+  await refund('refund.failed',...args)
+  await refund('refund.created',...args)
+  assert.equal(sqlite.prepare('SELECT failed_at FROM order_provider_refunds WHERE id=?').get(caseId).failed_at,time)
+  await refund('refund.processed',...args)
+  await refund('refund.failed',...args)
+  assert.equal(row(orderId).payment_status,'paid')
+  assert.equal(sqlite.prepare('SELECT SUM(amount) AS total FROM refunds WHERE order_id=?').get(orderId).total,1000)
+  const lateArgs=['rfnd_late123',lateJob,'pay_late123',4300]
+  await refund('refund.processed',...lateArgs)
+  await refund('refund.processed',...lateArgs)
+  assert.equal(row(lateId).payment_status,'refunded')
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM refunds WHERE order_id=?').get(lateId).n,1)
+
 })

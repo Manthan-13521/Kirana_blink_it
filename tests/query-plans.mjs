@@ -38,9 +38,9 @@ const queries = {
   'active rider cash collection': ["SELECT SUM(total) FROM orders WHERE assigned_to=? AND fulfillment='delivery' AND payment_status='cash_collected' AND reconciled=0",['demo-rider']],
   'completion activity since midnight': ["SELECT status FROM order_events INDEXED BY completed_events_recent WHERE status='completed' AND created_at>=?",[1800015000]],
   'session lookup': ["SELECT accounts.id,role,name,phone FROM sessions JOIN accounts ON accounts.id=sessions.account_id WHERE hash=? AND expires_at>? AND active=1",['fixture',1800000000]],
-  'provider link lookup': ['SELECT link_id,payment_id FROM order_payment_links WHERE order_id=?',['plan-1']],
+  'provider checkout callback': ['SELECT order_id,expires_at FROM order_checkout_payments WHERE provider_order_id=? AND mode=? AND payment_id IS NULL',['order_fixture','live']],
   'outstanding refund amount': ["SELECT SUM(amount) FROM order_provider_refunds WHERE order_id=? AND status<>'processed'",['plan-1']],
-  'due refund processing': ["SELECT r.id,p.payment_id FROM order_provider_refunds r JOIN order_payment_links p ON p.order_id=r.order_id WHERE r.status<>'processed' AND r.next_attempt<=? ORDER BY r.next_attempt,r.id LIMIT 4",[1800000000]],
+  'due refund processing': ["SELECT r.id,COALESCE(n.payment_id,l.payment_id) FROM order_provider_refunds r LEFT JOIN order_checkout_payments n ON n.order_id=r.order_id AND n.payment_id IS NOT NULL LEFT JOIN order_payment_links l ON l.order_id=r.order_id AND l.payment_id IS NOT NULL WHERE r.status<>'processed' AND r.failed_at IS NULL AND (n.mode='test' OR n.mode IS NULL AND l.payment_id IS NOT NULL) AND r.next_attempt<=? ORDER BY r.next_attempt,r.id LIMIT 4",[1800000000]],
   'Google workspace lookup': ['SELECT a.id,a.role FROM google_identities g JOIN accounts a ON a.id=g.account_id WHERE g.subject=? AND g.workspace=?',['fixture','shop']],
   'owned saved address': ['SELECT id FROM addresses WHERE id=? AND account_id=?',['demo-address','demo-customer']],
   'checkout replay lookup': ['SELECT id,request_fingerprint FROM orders WHERE account_id=? AND request_key=?',['demo-customer','plan-1']],
@@ -68,6 +68,7 @@ console.log(JSON.stringify(plans,null,2))
 if(refined) {
   for(const [name,index] of Object.entries({
     'low stock':'products_low_stock','expiry alerts':'products_upcoming_expiry','rider history':'rider_history',
+    'due refund processing':'provider_refund_due',
     'product media retention':'products_media_reference','active rider cash collection':'rider_unreconciled','public all products cursor':'products_active_id','two-token prefix search':'PRIMARY KEY','public category cursor':'products_category','slot admission':'slot_usage','customer order cursor':'orders_owner',
   })) {
     if(!plans[name].some(detail=>detail.includes(index))||plans[name].some(detail=>detail.includes('TEMP B-TREE'))) {

@@ -9,6 +9,7 @@ export type Env = {
     GOOGLE_OWNER_EMAILS?:string; GOOGLE_RIDER_EMAIL?:string; STAGING_CHECKOUT_EMAILS?:string
     MEDIA_STATIC_ORIGIN?:string; GEOAPIFY_KEY?:string; VAPID_PUBLIC_KEY?:string; VAPID_PRIVATE_JWK?:string; VAPID_CONTACT?:string
     RAZORPAY_KEY_ID?:string; RAZORPAY_KEY_SECRET?:string; RAZORPAY_WEBHOOK_SECRET?:string
+    RAZORPAY_MODE?:string; RAZORPAY_LIVE_CHECKOUT?:string; RAZORPAY_LIVE_REFUNDS?:string; PUBLIC_CHECKOUT?:string
   }
   Variables: { account: Account; localEntry: boolean; stagingCheckout:boolean }
 }
@@ -98,6 +99,10 @@ export async function shop(db: D1Database) {
 export const token = () => Array.from(crypto.getRandomValues(new Uint8Array(32)), x => x.toString(16).padStart(2,'0')).join('')
 export async function digest(text: string) {
   return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(text))),x=>x.toString(16).padStart(2,'0')).join('')
+}
+export function checkoutAccess(c:Ctx){
+  return localhost(c)||c.env.APP_MODE==='staging'&&c.get('stagingCheckout')||
+    c.env.APP_MODE==='production'&&c.env.PUBLIC_CHECKOUT==='enabled'
 }
 export function localhost(c: Ctx) {
   return c.get('localEntry') && c.env.APP_MODE === 'local' && ['localhost','127.0.0.1','[::1]'].includes(new URL(c.req.url).hostname)

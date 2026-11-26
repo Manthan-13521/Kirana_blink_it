@@ -1,3 +1,6 @@
+import { flushSync } from 'react-dom'
+import { loadCheckout } from './razorpay-checkout'
+import type { PaymentChallenge,PaymentProof } from './razorpay-checkout'
 import { lazy,Suspense,useEffect,useMemo,useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import { ArrowLeft,ArrowRight,Check,Clock3,CreditCard,FileDown,MapPin,Minus,Plus,ShoppingBasket,Store,Truck,Wallet } from 'lucide-react'
@@ -172,7 +175,7 @@ export function Cart({shop,refreshShop,account,cart,change,onClose,requireLogin,
       <label><span><Clock3 size={16}/> {mode==='delivery'?'Delivery window':'Pickup window'}</span>{slots.length?<select value={slot} onChange={e=>{changed();setSlot(Number(e.target.value))}}>{slots.map(s=><option value={s.start} key={s.start}>{windowLabel(s.start,s.end)}</option>)}</select>:<span className="muted">{slotMode===null?'Checking available windows…':delivery&&pickup?(mode==='delivery'?'No available windows. Try store pickup.':'No available windows. Try home delivery.'):'No windows are available right now.'}</span>}</label>
       <label>Order note <input placeholder="Optional instructions" value={note} maxLength={280} onChange={e=>{changed();setNote(e.target.value)}}/></label>
       <div><b>Payment</b><div className="choice-grid pad-top">{Boolean(shop.enable_cod)&&<button className={'option '+(method==='cash'?'active':'')} onClick={()=>{changed();setMethod('cash')}}><Wallet size={19}/>{mode==='pickup'?'Cash at pickup':'Cash on delivery'}</button>}
-      {Boolean(shop.enable_online)&&<button className={'option '+(method==='online'?'active':'')} onClick={()=>{changed();setMethod('online')}}><CreditCard size={19}/> Online test payment</button>}</div></div>
+      {Boolean(shop.enable_online)&&<button className={'option '+(method==='online'?'active':'')} onClick={()=>{changed();setMethod('online')}}><CreditCard size={19}/> Online payment</button>}</div></div>
       <div className="bill">
         <div className="summary-line"><span>Items</span><span>{rupee(quote?.subtotal??subtotal)}</span></div>
         <div className="summary-line"><span>{mode==='pickup'?'Pickup':'Delivery'} fee</span><span>{rupee(quote?.fees??(mode==='delivery'&&subtotal<shop.free_delivery?shop.delivery_fee:0))}</span></div>
@@ -203,6 +206,7 @@ export function OrderList({open}:{open:(id:string)=>void}){
 type DetailProps={orderId:string;onClose:()=>void;account:Account;shop:Shop;local?:boolean;extra?:(order:OrderDetail,refresh:()=>Promise<void>)=>ReactNode;reorder?:(items:OrderDetail['items'])=>Promise<void>}
 export function OrderView({orderId,onClose,account,shop,local=false,extra,reorder}:DetailProps){
   const [order,setOrder]=useState<OrderDetail|null>(null), [error,setError]=useState(''), [ok,setOk]=useState('')
+  const [paymentOverlay,setPaymentOverlay]=useState(false)
   const [kind,setKind]=useState(''),[reason,setReason]=useState(''),[busy,setBusy]=useState(false)
   const refresh=async()=>{try{setOrder(await api<OrderDetail>('/orders/'+orderId))}catch(e){setError(message(e))}}
   useEffect(()=>{void refresh()},[orderId])
@@ -210,7 +214,31 @@ export function OrderView({orderId,onClose,account,shop,local=false,extra,reorde
     setBusy(true);setError('');setOk('')
     try {await action();setOk(success);await refresh()}catch(e){setError(message(e))}finally{setBusy(false)}
   }
-  return <Sheet title={'Order '+displayOrder(orderId)} onClose={onClose} wide>
+  async function pay(){
+    setBusy(true);setError('');setOk('')
+    try{
+      const challenge=await send<PaymentChallenge>('/orders/'+orderId+'/payment',{})
+      const Razorpay=await loadCheckout()
+      let proof:PaymentProof|null
+      // A native dialog otherwise makes the gateway's independently mounted iframe inert.
+      flushSync(()=>setPaymentOverlay(true))
+      try{
+        proof=await new Promise<PaymentProof|null>(resolve=>{
+          new Razorpay({key:challenge.key,order_id:challenge.orderId,amount:challenge.amount,currency:challenge.currency,
+            name:shop.name,description:challenge.mode==='test'?'Test order':'Kirana order',
+            handler:resolve,modal:{ondismiss:()=>resolve(null)}}).open()
+        })
+      }finally{setPaymentOverlay(false)}
+      if(proof){
+        const result=await send<{state:string}>('/orders/'+orderId+'/payment/verify',proof)
+        setOk(result.state==='confirmed'?'Payment confirmed.':
+          result.state==='refund_review'?'Payment arrived after the order closed. The store will review the refund.':
+          'Payment confirmation is pending. Check the order before trying again.')
+      }
+    }catch(e){setError(message(e))}
+    finally{await refresh();setBusy(false)}
+  }
+  return <Sheet title={'Order '+displayOrder(orderId)} onClose={busy?()=>{}:onClose} wide suspended={paymentOverlay}>
     <ErrorText text={error}/><Success text={ok}/>
     {!order&&!error&&<p>Loading order…</p>}
     {order&&<div className="stack">
@@ -225,15 +253,25 @@ export function OrderView({orderId,onClose,account,shop,local=false,extra,reorde
       </section>
       {account.role==='customer'&&local&&order.status==='awaiting_payment'&&<div className="info-box stack compact"><b>Local payment simulator</b><span>No money is collected.</span><div className="actions"><button className="button primary" disabled={busy} onClick={()=>void operate(()=>send('/orders/'+orderId+'/test-payment',{result:'paid'}),'Test payment completed.')}>Simulate success</button><button className="button secondary" disabled={busy} onClick={()=>void operate(()=>send('/orders/'+orderId+'/test-payment',{result:'failed'}),'Test payment cancelled.')}>Simulate failure</button></div></div>}
       {account.role==='customer'&&!local&&order.status==='awaiting_payment'&&<div className="info-box stack compact">
-        <b>Razorpay Test Mode</b><span>Use test payment details. Refresh this order after Razorpay returns.</span>
-        <button className="button primary" disabled={busy} onClick={()=>void operate(async()=>{
-          const result=await send<{url:string}>('/orders/'+orderId+'/payment-link',{})
-          const url=new URL(result.url)
-          if(url.origin!=='https://rzp.io')throw new Error('Unexpected payment destination.')
-          location.assign(url)
-        },'Opening Razorpay…')}>Open Razorpay</button>
+        <b>Pay securely with Razorpay</b>
+        <span>{order.paymentFailed?'A payment attempt failed. You can retry while this reservation is open.':'Your items are reserved for up to 15 minutes. Check this order before retrying if payment is interrupted.'}</span>
+        <div className="actions">
+          <button className="button primary" disabled={busy} onClick={()=>void pay()}>Pay {rupee(order.total)}</button>
+          <button className="button secondary" disabled={busy} onClick={()=>void operate(
+            ()=>send('/orders/'+orderId+'/payment/cancel',{}),'Reservation cancelled.'
+          )}>Cancel reservation</button>
+        </div>
       </div>}
-      {order.refundPending&&<p className="muted">Razorpay refund pending confirmation.</p>}
+      {order.refundFailed&&<p className="muted">Razorpay reported a failed refund. The store needs to review it.</p>}
+      {order.refundPending&&!order.refundFailed&&<p className="muted">Razorpay refund pending confirmation.</p>}
+      {order.liveRefunds?.map(refund=><button key={refund.id} className="button secondary" disabled={busy} onClick={()=>{
+        if(window.confirm('Submit this live Razorpay refund of '+rupee(refund.amount)+'?')){
+          void operate(()=>send('/admin/payments/refunds/'+refund.id+'/submit',{}),'Refund status refreshed.')
+        }
+      }}>{refund.status==='queued'?'Submit live refund':'Check live refund'} · {rupee(refund.amount)}</button>)}
+      {account.role==='owner'&&order.canReconcilePayment&&<button className="button secondary" disabled={busy} onClick={()=>void operate(
+        ()=>send('/admin/orders/'+orderId+'/payment/reconcile',{}),'Payment status refreshed.'
+      )}>Check Razorpay payment</button>}
       {extra?.(order,refresh)}
       {account.role!=='rider'&&order.status!=='awaiting_payment'&&<div className="actions">
         {['completed','placed','accepted','packing','ready','out_for_delivery'].includes(order.status)&&<button className="button secondary" onClick={()=>void operate(()=>invoice(order),'Bill downloaded.')}><FileDown size={16}/> Download bill</button>}

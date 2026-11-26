@@ -3,7 +3,9 @@ import { all,json,now,one,Problem,role,S,statement } from './shared'
 import type { Env } from './shared'
 import { reserve } from './budget'
 import { applyOrderPaymentEvent } from './checkout-payments'
-import { identifier,provider,safePaymentLink,testCredentials,validWebhook } from './payment-provider'
+import type { PaymentEvent } from './checkout-payments'
+import { applyStandardEvent } from './standard-checkout'
+import { identifier,paymentCredentials,provider,safePaymentLink,testCredentials,validWebhook } from './payment-provider'
 
 export const razorpay=new Hono<Env>()
 const value=100
@@ -77,13 +79,14 @@ razorpay.post('/admin/payments/test/:reference/refund',async c=>{
   return c.json({status})
 })
 razorpay.post('/webhooks/razorpay',async c=>{
-  const credentials=testCredentials(c.env)
-  if(!credentials)throw new Problem(404,'Razorpay staging webhook unavailable.')
+  const credentials=paymentCredentials(c.env)
+  if(!credentials)throw new Problem(404,'Razorpay webhook unavailable.')
   const body=await c.req.arrayBuffer(),signature=c.req.header('X-Razorpay-Signature')??''
   if(!await validWebhook(body,signature,credentials.webhook))throw new Problem(403,'Invalid webhook signature.')
-  type Entity={id?:string;reference_id?:string;amount?:number;amount_paid?:number;currency?:string;status?:string;payment_id?:string}
-  let event:{event?:string;payload?:Record<string,{entity?:Entity}>}
+  let event:PaymentEvent
   try{event=JSON.parse(new TextDecoder().decode(body))}catch{throw new Problem(400,'Invalid webhook body.')}
+  if(!event||typeof event.event!=='string')throw new Problem(400,'Invalid webhook event.')
+  if(await applyStandardEvent(c.env.DB,event,credentials)||credentials.mode==='live')return c.json({ok:true})
   const link=event.payload?.payment_link?.entity, payment=event.payload?.payment?.entity, refund=event.payload?.refund?.entity
   const db=c.env.DB
   if(await applyOrderPaymentEvent(db,event))return c.json({ok:true})
