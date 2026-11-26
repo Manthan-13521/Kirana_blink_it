@@ -3,8 +3,8 @@ import type { ReactNode } from 'react'
 import { ChevronRight, CircleAlert, CircleCheck, Package, ShoppingBasket, X } from 'lucide-react'
 import { pretty } from './lib'
 
-export function Mark({name='Neighbourhood Kirana'}:{name?:string}){
-  return <span className="wordmark"><span className="logo-mark"><ShoppingBasket size={23} strokeWidth={2.4}/></span><span>{name}</span></span>
+export function Mark({name='Neighbourhood Kirana',logo}:{name?:string;logo?:string|null}){
+  return <span className="wordmark"><span className="logo-mark">{logo?<img src={logo} alt=""/>:<ShoppingBasket size={23} strokeWidth={2.4}/>}</span><span>{name}</span></span>
 }
 export function Sheet({title,children,onClose,wide=false,suspended=false}:{title:string;children:ReactNode;onClose:()=>void;wide?:boolean;suspended?:boolean}){
   const dialog=useRef<HTMLDialogElement>(null)

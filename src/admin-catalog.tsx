@@ -10,17 +10,19 @@ const draftInitial=(category:string):Draft=>({sku:'',name:'',brand:'',descriptio
 export function AdminCatalog({owner}:{owner:boolean}){
   const [data,setData]=useState<Product[]>([]),[categories,setCategories]=useState<Category[]>([])
   const [search,setSearch]=useState(''),[after,setAfter]=useState<string|null>(null)
+  const [stockFilter,setStockFilter]=useState('')
   const [draft,setDraft]=useState<Draft|null>(null),[stock,setStock]=useState<Product|null>(null)
+  const [categoryForm,setCategoryForm]=useState(false),[categoryId,setCategoryId]=useState(''),[categoryName,setCategoryName]=useState('')
   const [error,setError]=useState(''),[ok,setOk]=useState(''),[busy,setBusy]=useState(false)
   const load=async(cursor?:string,signal?:AbortSignal)=>{
     try{
-      const q=new URLSearchParams({q:search,...(cursor?{after:cursor}:{})})
+      const q=new URLSearchParams({q:search,...(stockFilter?{stock:stockFilter}:{}),...(cursor?{after:cursor}:{})})
       const result=await api<{products:Product[];next:string|null}>('/admin/products?'+q,{signal})
       if(!signal?.aborted){setData(previous=>cursor?[...previous,...result.products]:result.products);setAfter(result.next)}
     }catch(e){if(!signal?.aborted)setError(message(e))}
   }
   useEffect(()=>{api<Category[]>('/categories').then(setCategories,e=>setError(message(e)))},[])
-  useEffect(()=>{const controller=new AbortController();const t=setTimeout(()=>void load(undefined,controller.signal),200);return()=>{clearTimeout(t);controller.abort()}},[search])
+  useEffect(()=>{const controller=new AbortController();const t=setTimeout(()=>void load(undefined,controller.signal),200);return()=>{clearTimeout(t);controller.abort()}},[search,stockFilter])
   const act=async(task:()=>Promise<unknown>,hint:string)=>{
     setBusy(true);setError('');setOk('')
     try {await task();setOk(hint);await load()}catch(e){setError(message(e))}finally{setBusy(false)}
@@ -28,6 +30,7 @@ export function AdminCatalog({owner}:{owner:boolean}){
   return <section className="stack catalog-workspace">
     <Heading title="Catalog & inventory" detail="One inventory for online orders and the counter." action={<button className="button primary" onClick={()=>setDraft(draftInitial(categories[0]?.id||''))}><Plus size={17}/> Add product</button>}/>
     <div className="toolbar"><label className="search-box compact-search"><Search size={18}/><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search product or SKU" aria-label="Search products"/></label>
+      <select aria-label="Filter by stock level" value={stockFilter} onChange={e=>setStockFilter(e.target.value)}><option value="">All stock levels</option><option value="low">Low stock</option><option value="out">Out of stock</option></select>
       <button className="button secondary" disabled={busy} onClick={()=>downloadCsv(data,'kirana-catalog-page.csv')}><FileDown size={16}/> Export displayed</button>
       {owner&&<><label className={'button secondary file-button '+(busy?'disabled':'')}><Upload size={16}/> Import CSV <input type="file" accept=".csv,text/csv" disabled={busy} onChange={e=>{
         const file=e.target.files?.[0];e.target.value=''
@@ -42,7 +45,7 @@ export function AdminCatalog({owner}:{owner:boolean}){
           }))
           await send('/admin/products/import',{products:entries})
         },'CSV imported.')
-      }}/></label><button className="button secondary" onClick={()=>setDraft({category:'__new_category__'})}>+ Category</button></>}
+      }}/></label><button className="button secondary" onClick={()=>{setCategoryId('');setCategoryName('');setCategoryForm(true)}}>Manage categories</button></>}
     </div>
     <ErrorText text={error}/><Success text={ok}/>
     <div className="panel table-scroll catalog-table">{data.length?<table><thead><tr><th>Product</th><th>Price</th><th>Stock</th><th>Expiry</th><th>Actions</th></tr></thead><tbody>
@@ -51,18 +54,35 @@ export function AdminCatalog({owner}:{owner:boolean}){
       <td><div className="actions"><button className="button secondary small" aria-label={'Edit '+p.name} onClick={()=>setDraft(p)}>Edit</button><button className="button secondary small" aria-label={'Stock for '+p.name} onClick={()=>setStock(p)}>Stock</button></div></td></tr>)}
     </tbody></table>:<Empty title="No products" detail="Try a different search or add a new product."/>}</div>
     {after&&<button className="button secondary align-start" onClick={()=>void load(after)}>Load more products</button>}
-    {draft&&draft.category==='__new_category__'&&<Sheet title="New category" onClose={()=>setDraft(null)}><form className="stack" onSubmit={e=>{
-      e.preventDefault();const name=new FormData(e.currentTarget).get('label')
-      void act(async()=>{const category=await send<Category>('/admin/categories',{label:name});setCategories([...categories,category]);setDraft(null)},'Category added.')
-    }}><label>Category name<input name="label" required maxLength={60}/></label><button className="button primary" disabled={busy}>Add category</button></form></Sheet>}
-    {draft&&draft.category!=='__new_category__'&&<ProductForm product={draft} categories={categories} close={()=>setDraft(null)} saved={()=>{setDraft(null);setOk('Product saved.');void load()}}/>}
+    {categoryForm&&<Sheet title="Manage categories" onClose={()=>setCategoryForm(false)}><form className="stack" onSubmit={async e=>{
+      e.preventDefault();setBusy(true);setError('');setOk('')
+      const label=categoryName.trim()
+      try{
+        if(categoryId){
+          await send('/admin/categories/'+categoryId,{label},'PUT')
+          setCategories(rows=>rows.map(row=>row.id===categoryId?{...row,label}:row))
+        }else{
+          const category=await send<Category>('/admin/categories',{label})
+          setCategories(rows=>[...rows,category])
+        }
+        setCategoryForm(false);setOk(categoryId?'Category renamed.':'Category added.')
+      }catch(e){setError(message(e))}finally{setBusy(false)}
+    }}>
+      <ErrorText text={error}/>
+      <label>Category<select value={categoryId} onChange={e=>{const id=e.target.value;setCategoryId(id);setCategoryName(categories.find(row=>row.id===id)?.label??'')}}>
+        <option value="">Add a new category</option>{categories.map(row=><option key={row.id} value={row.id}>{row.label}</option>)}
+      </select></label>
+      <label>Category name<input value={categoryName} onChange={e=>setCategoryName(e.target.value)} required maxLength={60}/></label>
+      <button className="button primary" disabled={busy}>{categoryId?'Rename category':'Add category'}</button>
+    </form></Sheet>}
+    {draft&&<ProductForm product={draft} categories={categories} canArchive={owner} close={()=>setDraft(null)} saved={hint=>{setDraft(null);setOk(hint);void load()}}/>}
     {stock&&<StockForm product={stock} close={()=>setStock(null)} saved={()=>{setStock(null);setOk('Stock movement recorded.');void load()}}/>}
   </section>
 }
 
-function ProductForm({product,categories,close,saved}:{product:Draft;categories:Category[];close:()=>void;saved:()=>void}){
+function ProductForm({product,categories,canArchive,close,saved}:{product:Draft;categories:Category[];canArchive:boolean;close:()=>void;saved:(hint:string)=>void}){
   const [value,setValue]=useState(product),[file,setFile]=useState<File|null>(null),[remove,setRemove]=useState(false)
-  const [busy,setBusy]=useState(false),[error,setError]=useState('')
+  const [busy,setBusy]=useState(false),[error,setError]=useState(''),[confirmArchive,setConfirmArchive]=useState(false)
   const change=(key:keyof Product, val:unknown)=>setValue(v=>({...v,[key]:val}))
   const submit=async(e:FormEvent)=>{
     e.preventDefault();setBusy(true);setError('')
@@ -77,7 +97,7 @@ function ProductForm({product,categories,close,saved}:{product:Draft;categories:
       }
       if(image)await api('/admin/products/'+productId+'/image',{method:'POST',headers:{'Content-Type':image.type},body:image})
       else if(remove)await api('/admin/products/'+productId+'/image',{method:'DELETE'})
-      saved()
+      saved('Product saved.')
     }catch(e){setError(message(e))}finally{setBusy(false)}
   }
   const text=(key:keyof Product,label:string,required=false,maxLength=120)=><label>{label}<input value={String(value[key]??'')} onChange={e=>change(key,e.target.value)} maxLength={maxLength} required={required}/></label>
@@ -108,6 +128,15 @@ function ProductForm({product,categories,close,saved}:{product:Draft;categories:
         {(value.image||file)&&<button type="button" className="button secondary" onClick={()=>{setRemove(true);setFile(null)}}><Trash2 size={15}/> Remove image</button>}
       </div>
       <div className="actions"><button className="button primary" disabled={busy}>{busy?'Saving…':'Save product'}</button><button type="button" className="button secondary" onClick={close}>Cancel</button></div>
+      {canArchive&&value.id&&Boolean(product.active)&&<div className="stack">
+        {confirmArchive&&<p className="muted">Remove this product from sale? Its inventory records and order history will be retained.</p>}
+        <button type="button" className="button secondary align-start" disabled={busy} onClick={async()=>{
+          if(!confirmArchive){setConfirmArchive(true);return}
+          setBusy(true);setError('')
+          try{await api('/admin/products/'+value.id,{method:'DELETE'});saved('Product archived.')}
+          catch(e){setError(message(e))}finally{setBusy(false)}
+        }}><Archive size={15}/> {confirmArchive?'Confirm archive':'Archive product'}</button>
+      </div>}
     </form>
   </Sheet>
 }

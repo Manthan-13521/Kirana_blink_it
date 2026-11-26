@@ -26,9 +26,9 @@ const imagePath=new RegExp('^/media/'+uuid+'(?:[.]jpg)?$')
 const work=mkdtempSync(join(tmpdir(),'kirana-static-media-'))
 try{
   const result=JSON.parse(cloudflare(['d1','execute','DB','--remote','--config',config,'--json','--command',
-    "SELECT DISTINCT image FROM products WHERE image GLOB '/media/*' ORDER BY image LIMIT 5001"],true))
+    "SELECT image FROM products WHERE image GLOB '/media/*' UNION SELECT logo AS image FROM settings WHERE logo GLOB '/media/*' ORDER BY image LIMIT 5002"],true))
   const images=result[0].results.map(row=>row.image)
-  assert.ok(images.length<=5000&&images.every(path=>imagePath.test(path)),'The media manifest exceeds its allowed scope.')
+  assert.ok(images.length<=5001&&images.every(path=>imagePath.test(path)),'The media manifest exceeds its allowed scope.')
   const dir=join(work,'media')
   mkdirSync(dir)
   // An incomplete asset set must never replace the previous Pages deployment.

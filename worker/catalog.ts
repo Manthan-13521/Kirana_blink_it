@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { jpegMime,mediaFileId,validMedia,webpMime } from './media-format'
 import { all,audit,I,id,json,now,obj,one,Problem,role,S,statement } from './shared'
-import type { Env, Product } from './shared'
+import type { Ctx, Env, Product } from './shared'
 
 export const catalog=new Hono<Env>()
 const terms=(value:string)=>[...new Set(value.toLowerCase().normalize('NFKC').match(/[\p{L}\p{N}]+/gu)||[])]
@@ -63,11 +63,15 @@ catalog.get('/admin/products',async c=>{
   const q=S(c.req.query('q')??'','search',100,false)
   const after=S(c.req.query('after')??'','cursor',80,false)
   const db=c.env.DB
+  const stock=c.req.query('stock')
+  if(stock!==undefined&&stock!=='low'&&stock!=='out')throw new Problem(400,'Invalid stock filter.')
+  const stockFilter=stock==='out'?' AND products.active=1 AND products.stock=0'
+    :stock==='low'?' AND products.active=1 AND products.stock>0 AND products.stock<=products.threshold':''
   const words=terms(q).slice(0,5)
   const search=words.length?await searchCatalog(db,words,after):null
   const data=search
-    ?await all<Product>(db,`SELECT products.* FROM ${search.source} WHERE ${search.filters.join(' AND ')} ORDER BY match.product_id LIMIT 81`,...search.params)
-    :await all<Product>(db,'SELECT * FROM products WHERE id>? ORDER BY id LIMIT 81',after)
+    ?await all<Product>(db,`SELECT products.* FROM ${search.source} WHERE ${search.filters.join(' AND ')}${stockFilter} ORDER BY match.product_id LIMIT 81`,...search.params)
+    :await all<Product>(db,'SELECT * FROM products WHERE id>?'+stockFilter+' ORDER BY id LIMIT 81',after)
   return c.json({products:data.slice(0,80),next:data.length>80?data[79].id:null})
 })
 catalog.get('/admin/products/:id/stock',async c=>{
@@ -130,6 +134,14 @@ catalog.put('/admin/products/:id',async c=>{
   await db.batch(writeProduct(db,raw,actor.id,productId,true))
   return c.json({ok:true})
 })
+catalog.delete('/admin/products/:id',async c=>{
+  const actor=role(c,'owner'),db=c.env.DB,productId=c.req.param('id'),time=now()
+  await db.batch([
+    statement(db,'UPDATE products SET active=0,updated_at=? WHERE id=? AND active=1',time,productId),
+    statement(db,"INSERT INTO audit(actor,action,subject,created_at) SELECT ?,'product.archive',?,? WHERE changes()=1",actor.id,productId,time),
+  ])
+  return c.json({ok:true})
+})
 catalog.post('/admin/products/import',async c=>{
   const actor=role(c,'owner'), db=c.env.DB, data=await json(c), entries=data.products
   if(!Array.isArray(entries)||!entries.length||entries.length>25) throw new Problem(400,'Import 1–25 rows per batch.')
@@ -140,7 +152,62 @@ catalog.post('/admin/categories',async c=>{
   const actor=role(c,'owner'), db=c.env.DB, data=await json(c), categoryId=id()
   const label=S(data.label,'category name',60)
   await db.batch([statement(db,'INSERT INTO categories(id,label,sort) VALUES(?,?,99)',categoryId,label),audit(db,actor.id,'category.create',categoryId,label)])
-  return c.json({id:categoryId,label})
+  return c.json({id:categoryId,label,image:null})
+})
+catalog.put('/admin/categories/:id',async c=>{
+  const actor=role(c,'owner'),db=c.env.DB,categoryId=c.req.param('id'),data=await json(c)
+  const label=S(data.label,'category name',60)
+  const result=await db.batch([
+    statement(db,'UPDATE categories SET label=? WHERE id=?',label,categoryId),
+    statement(db,"INSERT INTO audit(actor,action,subject,detail,created_at) SELECT ?,'category.rename',?,?,? WHERE changes()=1",actor.id,categoryId,label,now()),
+  ])
+  if(!result[0].meta.changes)throw new Problem(404,'Category not found.')
+  return c.json({ok:true})
+})
+
+async function stageImage(c:Ctx){
+  const mime=c.req.header('content-type')??''
+  if(mime!==webpMime&&mime!==jpegMime)throw new Problem(400,'Use a WebP or JPEG image.')
+  const data=await c.req.arrayBuffer()
+  if(!validMedia(data,mime))throw new Problem(400,'Use a valid image up to 512 pixels and 32 KiB.')
+  const key=id(),imageUrl='/media/'+key+(mime===jpegMime?'.jpg':''),time=now()
+  await statement(c.env.MEDIA,'INSERT INTO media(id,payload,size,created_at,expires_at,mime) VALUES(?,?,?,?,?,?)',
+    key,data,data.byteLength,time,time+172800,mime).run()
+  return {key,imageUrl,time}
+}
+async function activateImage(media:D1Database,key:string,time:number){
+  await statement(media,'UPDATE media SET expires_at=NULL WHERE id=? AND expires_at=?',key,time+172800).run()
+}
+async function retireImage(media:D1Database,previous:string|null){
+  // A delayed activation must not clear an expiry set by a later replacement or removal.
+  if(previous?.startsWith('/media/'))await statement(media,'UPDATE media SET expires_at=? WHERE id=?',now()+172801,mediaFileId(previous)).run()
+}
+
+catalog.post('/admin/settings/logo',async c=>{
+  const actor=role(c,'owner'),db=c.env.DB,media=c.env.MEDIA
+  const settings=await one<{logo:string|null}>(db,'SELECT logo FROM settings WHERE id=1')
+  if(!settings)throw new Problem(503,'Store setup has not been completed.')
+  const {key,imageUrl,time}=await stageImage(c)
+  const result=await db.batch([
+    statement(db,'UPDATE settings SET logo=? WHERE id=1 AND logo IS ?',imageUrl,settings.logo),
+    statement(db,"INSERT INTO audit(actor,action,subject,detail,created_at) SELECT ?,'store.logo.publish','settings',?,? WHERE changes()=1",actor.id,imageUrl,time),
+  ])
+  if(!result[0].meta.changes)throw new Problem(409,'The logo changed. Refresh before replacing it.')
+  await activateImage(media,key,time)
+  await retireImage(media,settings.logo)
+  return c.json({logo:imageUrl})
+})
+catalog.delete('/admin/settings/logo',async c=>{
+  const actor=role(c,'owner'),db=c.env.DB,time=now()
+  const settings=await one<{logo:string|null}>(db,'SELECT logo FROM settings WHERE id=1')
+  if(!settings?.logo)return c.json({logo:null})
+  const result=await db.batch([
+    statement(db,'UPDATE settings SET logo=NULL WHERE id=1 AND logo=?',settings.logo),
+    statement(db,"INSERT INTO audit(actor,action,subject,created_at) SELECT ?,'store.logo.remove','settings',? WHERE changes()=1",actor.id,time),
+  ])
+  if(!result[0].meta.changes)throw new Problem(409,'The logo changed. Refresh before removing it.')
+  await retireImage(c.env.MEDIA,settings.logo)
+  return c.json({logo:null})
 })
 
 catalog.post('/admin/products/:id/image',async c=>{
@@ -148,13 +215,7 @@ catalog.post('/admin/products/:id/image',async c=>{
   const productId=c.req.param('id')
   const product=await one<{image:string|null}>(db,'SELECT image FROM products WHERE id=?',productId)
   if(!product) throw new Problem(404,'Product not found.')
-  const mime=c.req.header('content-type')??''
-  if(mime!==webpMime&&mime!==jpegMime)throw new Problem(400,'Use a WebP or JPEG image.')
-  const data=await c.req.arrayBuffer()
-  if(!validMedia(data,mime))throw new Problem(400,'Use a valid image up to 512 pixels and 32 KiB.')
-  const key=id(),imageUrl='/media/'+key+(mime===jpegMime?'.jpg':''),time=now()
-  await statement(media,'INSERT INTO media(id,payload,size,created_at,expires_at,mime) VALUES(?,?,?,?,?,?)',
-    key,data,data.byteLength,time,time+172800,mime).run()
+  const {key,imageUrl,time}=await stageImage(c)
   const result=await db.batch([
     statement(db,'UPDATE products SET image=?,updated_at=? WHERE id=? AND image IS ?',imageUrl,time,productId,product.image),
     statement(db,`INSERT INTO media_jobs(id,product_id,action,status,previous_url,image_url,created_at)
@@ -162,8 +223,8 @@ catalog.post('/admin/products/:id/image',async c=>{
     statement(db,"INSERT INTO audit(actor,action,subject,detail,created_at) SELECT ?,'media.publish',?,?,? WHERE changes()=1",actor.id,productId,imageUrl,time),
   ])
   if(!result[0].meta.changes) throw new Problem(409,'The image changed. Refresh before replacing it.')
-  await statement(media,'UPDATE media SET expires_at=NULL WHERE id=?',key).run()
-  if(product.image?.startsWith('/media/')) await statement(media,'UPDATE media SET expires_at=? WHERE id=?',time+172800,mediaFileId(product.image)).run()
+  await activateImage(media,key,time)
+  await retireImage(media,product.image)
   return c.json({image:imageUrl,status:'published'})
 })
 catalog.delete('/admin/products/:id/image',async c=>{
@@ -179,6 +240,6 @@ catalog.delete('/admin/products/:id/image',async c=>{
     statement(db,"INSERT INTO audit(actor,action,subject,created_at) SELECT ?,'media.remove',?,? WHERE changes()=1",actor.id,productId,time),
   ])
   if(!result[0].meta.changes) throw new Problem(409,'The image changed.')
-  if(p.image?.startsWith('/media/')) await statement(c.env.MEDIA,'UPDATE media SET expires_at=? WHERE id=?',time+172800,mediaFileId(p.image)).run()
+  await retireImage(c.env.MEDIA,p.image)
   return c.json({ok:true})
 })

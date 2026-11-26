@@ -141,7 +141,7 @@ function App(){
     <div className="topbar"><div className="shell top-inner"><span><Store size={13}/> {!shop.accepting?'Online ordering is temporarily unavailable':local?'Local demo store':'Your neighbourhood grocery'}</span>
     </div></div>
     <header className="main-header"><div className="shell header-inner">
-      <button className="brand-button" onClick={()=>go('shop')} aria-label={shop.name+' storefront'}><Mark name={shop.name}/></button>
+      <button className="brand-button" onClick={()=>go('shop')} aria-label={shop.name+' storefront'}><Mark name={shop.name} logo={shop.logo}/></button>
       {view==='shop'&&<>
         <button className="location-button" onClick={()=>setModal('location')}><span className="location-icon"><MapPin size={18}/></span><span><small>SHOPPING NEAR</small><b>{shop.locality}</b></span><ChevronDown size={13}/></button>
         <label className="search-box site-search"><Search size={20}/><input aria-label="Search groceries" placeholder={'Search “milk”, “bread”, “atta”…'} value={query} onChange={e=>setQuery(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')document.getElementById('products')?.scrollIntoView({behavior:'smooth'})}}/>{query&&<button className="search-clear" aria-label="Clear search" onClick={()=>setQuery('')}><X size={16}/></button>}</label>

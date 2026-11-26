@@ -2,7 +2,7 @@ import { useEffect,useState } from 'react'
 import { ArrowRight, BarChart3, Boxes, ClipboardList, FileDown, LayoutDashboard, Search, Settings2, ShoppingBag, Truck, Users, Wallet } from 'lucide-react'
 import { AdminCatalog } from './admin-catalog'
 import { OrderView } from './checkout'
-import { api,checkoutDraftKey,date,displayOrder,downloadCsv,message,pack,pretty,readCheckoutDraft,rupee,saveCheckoutDraft,send } from './lib'
+import { api,checkoutDraftKey,date,displayOrder,downloadCsv,message,pack,pretty,productImage,readCheckoutDraft,rupee,saveCheckoutDraft,send } from './lib'
 import type { Account,CartLine,OrderCase,OrderDetail,OrderRow,Product,Quote,Shop } from './lib'
 import { Empty,ErrorText,Heading,Status,Success } from './ui'
 
@@ -233,13 +233,35 @@ function Setup({shop,refresh}:{shop:Shop;refresh:()=>Promise<void>}){
   const field=(key:keyof Shop,label:string,pattern?:string)=><label>{label}<input value={String(value[key]??'')} onChange={e=>change(key,e.target.value)} pattern={pattern}/></label>
   const numeric=(key:keyof Shop,label:string,min:number,max:number,precision='1',currency=false)=><label>{label}<input type="number" value={Number(value[key])/(currency?100:1)} min={min} max={max} step={precision} onChange={e=>change(key,currency?Math.round(Number(e.target.value)*100):Number(e.target.value))} required/></label>
   const check=(key:keyof Shop,label:string)=><label className="check-label"><input type="checkbox" checked={Boolean(value[key])} onChange={e=>change(key,Number(e.target.checked))}/>{label}</label>
+  const updateLogo=async(file:File|null)=>{
+    if(!loaded||busy)return
+    setBusy(true);setError('');setOk('')
+    try{
+      const image=file?await productImage(file):null
+      const result=await api<{logo:string|null}>('/admin/settings/logo',image
+        ?{method:'POST',headers:{'Content-Type':image.type},body:image}:{method:'DELETE'})
+      change('logo',result.logo);await refresh();setOk(image?'Store logo updated.':'Store logo removed.')
+    }catch(e){setError(message(e))}finally{setBusy(false)}
+  }
   return <section className="stack"><Heading title="Store settings" detail="Set the store identity, service limits and checkout rules."/>
     <div className="chips">{['1. Store identity','2. Delivery & pickup','3. Payments & policies'].map((label,i)=><button className={'chip '+(step===i?'active':'')} key={label} onClick={()=>setStep(i)}>{label}</button>)}</div>
     <ErrorText text={error}/><Success text={ok}/>
     <form className="panel padded stack" onSubmit={async e=>{e.preventDefault();if(!loaded||busy)return;setBusy(true);setError('');setOk('')
       try{await send('/admin/settings',value,'PUT');await refresh();setOk('Store settings saved.')}catch(e){setError(message(e))}finally{setBusy(false)}
     }}>
-      {step===0&&<div className="form-grid">{field('name','Store name')}{field('tagline','Tagline')}{field('locality','Locality')}{field('phone','Store phone')}{field('address','Store address')}<label>Brand colour<input type="color" value={value.brand_color} onChange={e=>change('brand_color',e.target.value)}/></label></div>}
+      {step===0&&<>
+        <div className="form-grid">{field('name','Store name')}{field('tagline','Tagline')}{field('locality','Locality')}{field('phone','Store phone')}{field('address','Store address')}<label>Brand colour<input type="color" value={value.brand_color} onChange={e=>change('brand_color',e.target.value)}/></label></div>
+        <div className="media-form">
+          {value.logo&&<img src={value.logo} alt="Current store logo"/>}
+          <label className="button secondary file-button">{value.logo?'Replace store logo':'Upload store logo'}
+            <input type="file" accept="image/png,image/jpeg,image/webp,image/avif" disabled={busy||!loaded} onChange={e=>{
+              const file=e.currentTarget.files?.[0];e.currentTarget.value=''
+              if(file)void updateLogo(file)
+            }}/>
+          </label>
+          {value.logo&&<button className="button secondary" type="button" disabled={busy||!loaded} onClick={()=>void updateLogo(null)}>Remove logo</button>}
+        </div>
+      </>}
       {step===1&&<>
         <fieldset className="stack fulfillment-settings">
           <legend>Online fulfillment</legend>

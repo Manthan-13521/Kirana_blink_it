@@ -27,6 +27,7 @@ small{color:var(--muted)}
 .wordmark{display:inline-flex;align-items:center;gap:10px;font-weight:840;font-size:18px;letter-spacing:-.055em;line-height:1.03;color:var(--ink)}
 .wordmark>span:last-child{max-width:126px}
 .logo-mark{display:grid;place-items:center;background:var(--gold);color:#253a27;flex:none;width:41px;height:41px;border-radius:12px}
+.logo-mark img{width:100%;height:100%;object-fit:contain;border-radius:inherit;background:#fff}
 .location-button{display:flex;align-items:center;gap:9px;background:none;border:0;text-align:left;padding:0;white-space:nowrap}
 .location-button small{font-size:9px;font-weight:750;letter-spacing:.085em;display:block;margin-bottom:3px}
 .location-button b{font-size:13px;line-height:1.05;display:block}

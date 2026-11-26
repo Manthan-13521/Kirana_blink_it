@@ -282,7 +282,8 @@ async function cleanup(env:Env['Bindings'],expireTestPayments:boolean){
   ])
   const expired=await all<{id:string;mime:string}>(env.MEDIA,'SELECT id,mime FROM media WHERE expires_at<? LIMIT 25',time)
   if(!expired.length)return
-  const used=await all<{image:string}>(db,`SELECT image FROM products WHERE image IN (${expired.map(()=>'?').join(',')})`,...expired.map(r=>'/media/'+r.id+(r.mime===jpegMime?'.jpg':'')))
+  const used=await all<{image:string}>(db,`SELECT image FROM products WHERE image IN (${expired.map(()=>'?').join(',')})
+    UNION ALL SELECT logo AS image FROM settings WHERE id=1 AND logo IS NOT NULL`,...expired.map(r=>'/media/'+r.id+(r.mime===jpegMime?'.jpg':'')))
   const retained=new Set(used.map(r=>mediaFileId(r.image)))
   const deletions=expired.filter(r=>!retained.has(r.id)).map(r=>statement(env.MEDIA,'DELETE FROM media WHERE id=? AND expires_at<?',r.id,time))
   if(deletions.length) await env.MEDIA.batch(deletions)

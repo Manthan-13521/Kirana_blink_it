@@ -132,18 +132,21 @@ test('the D1 insert guard rejects an unavailable fulfillment method even with th
   }finally{sqlite.close()}
 })
 
-async function integrationFixture(t){
+async function integrationFixture(t,migrations='migrations'){
   const sqlite=new DatabaseSync(':memory:')
   t.after(()=>sqlite.close())
-  const directory=new URL('../migrations/',import.meta.url)
+  const directory=new URL('../'+migrations+'/',import.meta.url)
   for(const file of (await readdir(directory)).filter(name=>name.endsWith('.sql')).sort()){
     sqlite.exec(await readFile(new URL(file,directory),'utf8'))
   }
-  const bind=(sql,params)=>({
-    all:async()=>({results:sqlite.prepare(sql).all(...params)}),
-    first:async()=>sqlite.prepare(sql).get(...params)??null,
-    run:async()=>({meta:{changes:Number(sqlite.prepare(sql).run(...params).changes)}}),
-  })
+  const bind=(sql,values)=>{
+    const params=values.map(value=>value instanceof ArrayBuffer?new Uint8Array(value):value)
+    return {
+      all:async()=>({results:sqlite.prepare(sql).all(...params)}),
+      first:async()=>sqlite.prepare(sql).get(...params)??null,
+      run:async()=>({meta:{changes:Number(sqlite.prepare(sql).run(...params).changes)}}),
+    }
+  }
   const db={prepare:sql=>({...bind(sql,[]),bind:(...params)=>bind(sql,params)}),batch:async commands=>{
     sqlite.exec('BEGIN')
     try{
@@ -178,7 +181,7 @@ test('Google ID tokens are bound to the configured client and one-time nonce',as
 })
 
 test('Google workspaces enforce email-bound team invitations, single rider and revocation',async t=>{
-  const {resolveGoogleAccount}=await import('../worker/google-auth.ts')
+  const {googleWorkspace,resolveGoogleAccount}=await import('../worker/google-auth.ts')
   const {digest}=await import('../worker/shared.ts')
   const {sqlite,db}=await integrationFixture(t)
   const email='team@gmail.com',profile={sub:'stable-subject',email,email_verified:true}
@@ -195,15 +198,135 @@ test('Google workspaces enforce email-bound team invitations, single rider and r
   const staff=await resolveGoogleAccount(env,profile,'owner','fixture-staff')
   assert.notEqual(staff,shopper)
   assert.equal(sqlite.prepare('SELECT role FROM accounts WHERE id=?').get(staff).role,'staff')
+  assert.equal(await googleWorkspace(env,profile,'shop',null),'owner')
   await assert.rejects(resolveGoogleAccount(env,{...profile,sub:'other-subject'},'owner','fixture-staff'),/expired/)
   sqlite.prepare('UPDATE accounts SET active=0 WHERE id=?').run(staff)
   await assert.rejects(resolveGoogleAccount(env,profile,'owner',null),/not authorized/)
+  assert.equal(await googleWorkspace(env,profile,'owner',null),'shop')
+  assert.equal(await googleWorkspace(env,profile,'owner','replacement'),'owner')
   await invite('replacement','staff')
-  assert.notEqual(await resolveGoogleAccount(env,profile,'owner','replacement'),staff)
+  const activeStaff=await resolveGoogleAccount(env,profile,'owner','replacement')
+  assert.notEqual(activeStaff,staff)
   await invite('fixture-rider','rider')
   await assert.rejects(resolveGoogleAccount(env,profile,'rider','fixture-rider'),/no longer available/)
   sqlite.exec("UPDATE accounts SET active=0 WHERE role='rider'")
   assert.ok(await resolveGoogleAccount(env,profile,'rider','fixture-rider'))
+  assert.equal(await googleWorkspace(env,profile,'shop',null),'rider')
+  sqlite.prepare('INSERT INTO sessions(hash,account_id,expires_at) VALUES(?,?,?)').run('old-staff-session',activeStaff,expires)
+  const promotedEnv={...env,GOOGLE_OWNER_EMAILS:email}
+  assert.equal(await googleWorkspace(promotedEnv,profile,'shop',null),'owner')
+  assert.equal(await resolveGoogleAccount(promotedEnv,profile,'owner',null),activeStaff)
+  assert.equal(sqlite.prepare('SELECT role FROM accounts WHERE id=?').get(activeStaff).role,'owner')
+  assert.equal(sqlite.prepare('SELECT hash FROM sessions WHERE account_id=?').get(activeStaff),undefined)
+})
+
+test('Google callback directs verified roles from each sign-in entry and enforces dashboard authorization',async t=>{
+  const {application}=await import('../worker/app.ts')
+  const {resolveGoogleAccount}=await import('../worker/google-auth.ts')
+  const {digest}=await import('../worker/shared.ts')
+  const {sqlite,db}=await integrationFixture(t)
+  sqlite.exec("UPDATE accounts SET active=0 WHERE role='rider'")
+  const origin='https://store.example',client='test-oauth-client'
+  const env={DB:db,APP_MODE:'staging',PUBLIC_CHECKOUT:'disabled',GOOGLE_ORIGIN:origin,GOOGLE_CLIENT_ID:client,
+    GOOGLE_CLIENT_SECRET:'fixture',GOOGLE_OWNER_EMAILS:' Owner@gmail.com ',GOOGLE_RIDER_EMAIL:'rider@gmail.com',STAGING_CHECKOUT_EMAILS:'shopper@gmail.com'}
+  const worker=application()
+  const request=(path,options)=>worker.fetch(new Request(origin+path,options),env)
+  const {privateKey,publicKey}=generateKeyPairSync('rsa',{modulusLength:2048})
+  const encode=value=>Buffer.from(JSON.stringify(value)).toString('base64url')
+  const kid='callback-fixture-key'
+  let claims
+  t.mock.method(globalThis,'fetch',async(url,init)=>{
+    if(url==='https://oauth2.googleapis.com/token'){
+      assert.equal(init.body.get('redirect_uri'),origin+'/api/auth/google/callback')
+      const message=encode({alg:'RS256',kid})+'.'+encode(claims)
+      return Response.json({id_token:message+'.'+sign('RSA-SHA256',Buffer.from(message),privateKey).toString('base64url')})
+    }
+    assert.equal(url,'https://www.googleapis.com/oauth2/v3/certs')
+    return Response.json({keys:[{...publicKey.export({format:'jwk'}),kid}]})
+  })
+  const profile=email=>({sub:email.split('@')[0],email,email_verified:true})
+  const oldCustomer=await resolveGoogleAccount(env,profile('owner@gmail.com'),'shop',null)
+  for(const [workspace,email,checkout,path,role] of [
+    ['shop','owner@gmail.com',true,'/owner','owner'],
+    ['rider','owner@gmail.com',false,'/owner','owner'],
+    ['shop','rider@gmail.com',true,'/rider','rider'],
+    ['owner','rider@gmail.com',false,'/rider','rider'],
+    ['shop','shopper@gmail.com',true,'/?checkout=resume','customer'],
+    ['owner','other@gmail.com',false,'/?signin=complete','customer'],
+    ['rider','external@example.com',false,'/?signin=complete','customer'],
+  ]){
+    const options={method:'POST',headers:{Origin:origin,'Content-Type':'application/json'},body:JSON.stringify({workspace,checkout})}
+    const entry=await request('/api/auth/google',options)
+    assert.equal(entry.status,200)
+    const redirect=new URL((await entry.json()).url),state=redirect.searchParams.get('state')
+    const startCookie=entry.headers.get('set-cookie').split(';')[0]
+    const now=Math.floor(Date.now()/1000)
+    claims={...profile(email),iss:'https://accounts.google.com',aud:client,nonce:state,iat:now-1,exp:now+300}
+    const callback='/api/auth/google/callback?code=fixture&state='+state
+    const result=await request(callback,{headers:{Cookie:startCookie}})
+    assert.equal(result.status,303)
+    assert.equal(result.headers.get('location'),path)
+    const session=result.headers.getSetCookie().find(value=>value.startsWith('kirana_session='))
+    assert.match(session,/HttpOnly/i)
+    assert.match(session,/Secure/i)
+    const cookie=session.split(';')[0],optionsWithSession={headers:{Cookie:cookie}}
+    const me=await (await request('/api/me',optionsWithSession)).json()
+    assert.equal(me.account.role,role)
+    assert.notEqual(me.account.id,oldCustomer)
+    const stored=sqlite.prepare('SELECT staging_checkout FROM sessions WHERE hash=?').get(await digest(cookie.split('=')[1]))
+    assert.equal(Boolean(stored.staging_checkout),email==='shopper@gmail.com')
+    assert.equal((await request('/api/admin/settings',optionsWithSession)).status,role==='owner'?200:403)
+    assert.equal((await request('/api/rider/route',optionsWithSession)).status,role==='customer'?403:200)
+    assert.equal((await request(callback,{headers:{Cookie:startCookie}})).status,400)
+    assert.equal((await request('/api/auth/logout',{method:'POST',headers:{Origin:origin,Cookie:cookie}})).status,200)
+    assert.equal((await (await request('/api/me',optionsWithSession)).json()).account,null)
+  }
+})
+
+test('Owner catalog controls preserve existing product records and publish a replaceable logo',async t=>{
+  const {application}=await import('../worker/app.ts')
+  const {digest}=await import('../worker/shared.ts')
+  const {sqlite,db}=await integrationFixture(t)
+  const {sqlite:mediaSqlite,db:media}=await integrationFixture(t,'media-migrations')
+  const worker=application()
+  const origin='https://store.example',owner='a'.repeat(64),shopper='b'.repeat(64)
+  const expiry=Math.floor(Date.now()/1000)+3600
+  const session=sqlite.prepare('INSERT INTO sessions(hash,account_id,expires_at) VALUES(?,?,?)')
+  session.run(await digest(owner),'demo-owner',expiry)
+  session.run(await digest(shopper),'demo-customer',expiry)
+  const request=(path,method='GET',body,token=owner,mime='application/json')=>worker.fetch(new Request(origin+path,{
+    method,headers:{Origin:origin,Cookie:'kirana_session='+token,'Content-Type':mime},
+    body:mime==='application/json'&&body!==undefined?JSON.stringify(body):body,
+  }),{DB:db,MEDIA:media,APP_MODE:'staging'})
+  const product=sqlite.prepare('SELECT id,category,stock FROM products WHERE active=1 AND stock>0 LIMIT 1').get()
+  assert.equal((await request('/api/admin/categories/'+product.category,'PUT',{label:'New category name'},shopper)).status,403)
+  assert.equal((await request('/api/admin/categories/'+product.category,'PUT',{label:'New category name'})).status,200)
+  assert.equal((await (await request('/api/categories')).json()).find(row=>row.id===product.category).label,'New category name')
+  sqlite.prepare('UPDATE products SET threshold=stock WHERE id=?').run(product.id)
+  assert.equal((await (await request('/api/admin/products?stock=low')).json()).products.some(row=>row.id===product.id),true)
+  assert.equal((await (await request('/api/admin/products?stock=out')).json()).products.some(row=>row.id===product.id),false)
+  assert.equal((await request('/api/admin/products?stock=invalid')).status,400)
+  assert.equal((await request('/api/admin/products/'+product.id,'DELETE',undefined,shopper)).status,403)
+  assert.equal((await request('/api/admin/products/'+product.id,'DELETE')).status,200)
+  assert.equal((await request('/api/catalog/'+product.id)).status,404)
+  assert.deepEqual({...sqlite.prepare('SELECT active,stock FROM products WHERE id=?').get(product.id)},{active:0,stock:product.stock})
+  assert.equal((await (await request('/api/admin/products?stock=low')).json()).products.some(row=>row.id===product.id),false)
+  const fixture=await readFile(new URL('../public/catalog/01.webp',import.meta.url))
+  assert.equal((await request('/api/admin/settings/logo','POST',fixture,shopper,'image/webp')).status,403)
+  assert.equal((await request('/api/admin/settings/logo','POST','invalid',owner,'image/webp')).status,400)
+  const publish=async()=>{
+    const result=await request('/api/admin/settings/logo','POST',fixture,owner,'image/webp')
+    assert.equal(result.status,200)
+    return (await result.json()).logo
+  }
+  const first=await publish(),second=await publish()
+  assert.notEqual(first,second)
+  assert.equal((await (await request('/api/store')).json()).settings.logo,second)
+  assert.equal((await request(second)).status,200)
+  assert.ok(mediaSqlite.prepare('SELECT expires_at FROM media WHERE id=?').get(first.slice(7)).expires_at)
+  assert.equal((await request('/api/admin/settings/logo','DELETE')).status,200)
+  assert.equal((await (await request('/api/store')).json()).settings.logo,null)
+  assert.ok(mediaSqlite.prepare('SELECT expires_at FROM media WHERE id=?').get(second.slice(7)).expires_at)
 })
 
 test('Razorpay only settles matching captures and atomically queues late or owner refunds',async t=>{

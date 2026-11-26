@@ -40,6 +40,7 @@ export type Shop = {
   gstin: string
   policy: string
   brand_color: string
+  logo: string|null
   enable_delivery: number
   enable_pickup: number
   enable_cod: number

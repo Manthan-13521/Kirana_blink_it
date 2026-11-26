@@ -84,15 +84,44 @@ googleAuth.get('/auth/google/status',c=>c.json({enabled:Boolean(configuration(c)
 googleAuth.get('/auth/google',async c=>c.redirect(await start(c,{workspace:c.req.query('workspace')})))
 googleAuth.post('/auth/google',async c=>c.json({url:await start(c,await json(c))}))
 
+function authoritativeEmail(profile:Profile){
+  const email=profile.email.toLowerCase(),domain=email.split('@').at(-1)
+  return profile.email_verified===true&&
+    (domain==='gmail.com'||Boolean(domain&&typeof profile.hd==='string'&&profile.hd.toLowerCase()===domain))?email:null
+}
+
+function authorizedEmail(email:string|null,allowlist?:string){
+  return Boolean(email&&allowlist?.split(',').some(entry=>entry.trim().toLowerCase()===email))
+}
+
+export async function googleWorkspace(env:Env['Bindings'],profile:Profile,requested:Workspace,invite:string|null):Promise<Workspace>{
+  if(invite)return requested
+  const email=authoritativeEmail(profile)
+  if(authorizedEmail(email,env.GOOGLE_OWNER_EMAILS))return 'owner'
+  if(authorizedEmail(email,env.GOOGLE_RIDER_EMAIL))return 'rider'
+  const identity=await one<{workspace:'rider'|'owner'}>(env.DB,`SELECT g.workspace FROM google_identities g
+    JOIN accounts a ON a.id=g.account_id
+    WHERE g.subject=? AND g.workspace IN ('rider','owner') AND g.invited=1 AND a.active=1
+      AND (g.workspace='rider' AND a.role='rider' OR g.workspace='owner' AND a.role='staff')
+    ORDER BY (g.workspace='rider') DESC LIMIT 1`,profile.sub)
+  return identity?.workspace??'shop'
+}
+
 export async function resolveGoogleAccount(env:Env['Bindings'],profile:Profile,workspace:Workspace,invite:string|null){
-  const db=env.DB,email=profile.email.toLowerCase()
-  const domain=email.split('@').at(-1)
-  const authoritative=domain==='gmail.com'||Boolean(domain&&typeof profile.hd==='string'&&profile.hd.toLowerCase()===domain)
+  const db=env.DB,email=authoritativeEmail(profile)
   const allowlist=workspace==='owner'?env.GOOGLE_OWNER_EMAILS:env.GOOGLE_RIDER_EMAIL
-  const allowed=authoritative&&Boolean(allowlist?.split(',').some(entry=>entry.trim().toLowerCase()===email))
+  const allowed=authorizedEmail(email,allowlist)
   const account=await one<{id:string;role:Role;active:number;invited:number}>(db,`SELECT a.id,a.role,a.active,g.invited FROM google_identities g
     JOIN accounts a ON a.id=g.account_id WHERE g.subject=? AND g.workspace=?`,profile.sub,workspace)
   if(account?.active){
+    if(workspace==='owner'&&allowed&&account.role==='staff'&&account.invited){
+      await db.batch([
+        statement(db,"UPDATE accounts SET role='owner' WHERE id=? AND role='staff' AND active=1",account.id),
+        statement(db,"INSERT INTO audit(actor,action,subject,created_at) SELECT ?,'owner.allowlisted',?,? WHERE changes()=1",account.id,account.id,now()),
+        statement(db,'DELETE FROM sessions WHERE account_id=? AND changes()=1',account.id),
+      ])
+      return account.id
+    }
     if(workspace==='shop'&&account.role==='customer'||
       workspace==='owner'&&(account.role==='staff'&&Boolean(account.invited)||account.role==='owner'&&allowed)||
       workspace==='rider'&&account.role==='rider'&&(Boolean(account.invited)||allowed))return account.id
@@ -101,7 +130,7 @@ export async function resolveGoogleAccount(env:Env['Bindings'],profile:Profile,w
   const accountId=id(),name=typeof profile.name==='string'&&profile.name.trim()?profile.name.trim().slice(0,80):'Store account'
   const riderGuard=workspace==='rider'?"AND NOT EXISTS(SELECT 1 FROM accounts WHERE role='rider' AND active=1)":''
   // Revoked team identities can only be reconnected by a fresh owner invitation.
-  if(invite&&workspace!=='shop'&&authoritative){
+  if(invite&&workspace!=='shop'&&email){
     const role=workspace==='owner'?'staff':'rider',time=now()
     const result=await db.batch([
       statement(db,`INSERT INTO accounts(id,role,name) SELECT ?,?,?
@@ -149,17 +178,16 @@ googleAuth.get('/auth/google/callback',async c=>{
   const {id_token:raw}=await grant.json<{id_token?:string}>()
   if(typeof raw!=='string')throw invalid()
   const profile=await verifyGoogleIdentity(raw,config.clientId,state)
-  const account=await resolveGoogleAccount(c.env,profile,pending.workspace,pending.invite_hash)
-  const email=profile.email.toLowerCase()
-  const authoritative=email.endsWith('@gmail.com')||typeof profile.hd==='string'&&profile.hd.toLowerCase()===email.split('@').at(-1)
+  const workspace=await googleWorkspace(c.env,profile,pending.workspace,pending.invite_hash)
+  const account=await resolveGoogleAccount(c.env,profile,workspace,pending.invite_hash)
   const checkoutAllowlist=c.env.STAGING_CHECKOUT_EMAILS
-  const tester=c.env.APP_MODE==='staging'&&pending.workspace==='shop'&&authoritative&&
-    checkoutAllowlist?.split(',').some(entry=>entry.trim().toLowerCase()===email)?await digest(checkoutAllowlist):null
+  const tester=c.env.APP_MODE==='staging'&&workspace==='shop'&&checkoutAllowlist&&
+    authorizedEmail(authoritativeEmail(profile),checkoutAllowlist)?await digest(checkoutAllowlist):null
   const session=token(),age=8*3600,old=getCookie(c,'kirana_session')
   await db.batch([
     statement(db,'INSERT INTO sessions(hash,account_id,expires_at,staging_checkout) VALUES(?,?,?,?)',await digest(session),account,now()+age,tester),
     ...(old&&/^[a-f0-9]{64}$/.test(old)?[statement(db,'DELETE FROM sessions WHERE hash=?',await digest(old))]:[]),
   ])
   setCookie(c,'kirana_session',session,{path:'/',httpOnly:true,secure:true,sameSite:'Lax',maxAge:age})
-  return c.redirect(pending.workspace==='shop'?(pending.return_checkout?'/?checkout=resume':'/?signin=complete'):workspacePath[pending.workspace],303)
+  return c.redirect(workspace==='shop'?(pending.return_checkout?'/?checkout=resume':'/?signin=complete'):workspacePath[workspace],303)
 })
