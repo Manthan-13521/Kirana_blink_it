@@ -247,7 +247,7 @@ export function application(localRoutes?:Hono<Env>) {
     if(asset){
       try{
         const response=await fetch(asset+'/media/'+file+(jpeg?'':'.webp'),{
-          signal:AbortSignal.timeout(1800),redirect:'error',
+          signal:AbortSignal.timeout(1800),redirect:'manual',
         })
         if(response.ok&&response.headers.get('Content-Type')?.startsWith(mime)){
           return new Response(response.body,{headers:{
@@ -278,6 +278,7 @@ async function cleanup(env:Env['Bindings'],expireTestPayments:boolean){
     statement(db,'DELETE FROM carts WHERE account_id IN (SELECT account_id FROM carts WHERE updated_at<? LIMIT 200)',time-2*DAY),
     statement(db,'DELETE FROM invites WHERE hash IN (SELECT hash FROM invites WHERE expires_at<? LIMIT 200)',time),
     statement(db,'DELETE FROM notices WHERE id IN (SELECT id FROM notices WHERE created_at<? LIMIT 200)',time-2*DAY),
+    statement(db,'DELETE FROM routing_cache WHERE id=1 AND expires_at<?',time),
   ])
   const expired=await all<{id:string;mime:string}>(env.MEDIA,'SELECT id,mime FROM media WHERE expires_at<? LIMIT 25',time)
   if(!expired.length)return

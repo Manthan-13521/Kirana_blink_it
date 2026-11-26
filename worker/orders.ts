@@ -312,7 +312,7 @@ orders.get('/rider/route',async c=>{
   const rider=actor.role==='rider'?actor:await one<{id:string}>(db,"SELECT id FROM accounts WHERE role='rider' AND active=1")
   const dayStart=shopDayStart(now())
   const [rows,summary]=rider?await Promise.all([
-    all<{id:string;route_rank:number;address_json:string;status:string}>(db,`SELECT id,route_rank,address_json,status FROM orders WHERE assigned_to=? AND status IN('ready','out_for_delivery') ORDER BY route_rank,created_at LIMIT 30`,rider.id),
+    all<{id:string;route_rank:number;address_json:string;status:string}>(db,`SELECT id,route_rank,address_json,status FROM orders WHERE assigned_to=? AND status IN('ready','out_for_delivery') ORDER BY route_rank,created_at,id LIMIT 30`,rider.id),
     one<{completed:number;cash:number;active:number}>(db,`SELECT
       (SELECT COUNT(*) FROM order_events AS event INDEXED BY completed_events_recent
        CROSS JOIN orders AS completed ON completed.id=event.order_id
@@ -333,6 +333,6 @@ orders.put('/rider/route',async c=>{
   if(!rider) throw new Problem(409,'No rider is active.')
   const rows=await all<{id:string}>(db,`SELECT id FROM orders WHERE assigned_to=? AND status IN('ready','out_for_delivery') AND id IN (${ids.map(()=>'?').join(',')})`,rider.id,...ids)
   if(rows.length!==ids.length) throw new Problem(403,'One route stop is unavailable.')
-  await db.batch(ids.map((orderId,i)=>statement(db,`UPDATE orders SET route_rank=? WHERE id=? AND assigned_to=? AND status IN('ready','out_for_delivery')`,i+1,orderId,rider.id)))
+  await db.batch(ids.map((orderId,i)=>statement(db,`UPDATE orders SET route_rank=? WHERE id=? AND assigned_to=? AND status IN('ready','out_for_delivery') AND route_rank<>?`,i+1,orderId,rider.id,i+1)))
   return c.json({ok:true})
 })

@@ -72,7 +72,7 @@ async function sendPush(env:Env['Bindings'],accountId:string){
     const url=pushEndpoint(endpoint)
     if(!url)return
     const authorization=await vapidHeader(key,config.publicKey,url.origin,config.contact,expiry)
-    const r=await fetch(url,{method:'POST',redirect:'error',signal:AbortSignal.timeout(5000),
+    const r=await fetch(url,{method:'POST',redirect:'manual',signal:AbortSignal.timeout(5000),
       headers:{Authorization:authorization,TTL:'1800',Urgency:'normal'}})
     if(r.status===404||r.status===410)await statement(env.DB,'DELETE FROM push_subscriptions WHERE endpoint=? AND account_id=?',endpoint,accountId).run()
     await r.body?.cancel()

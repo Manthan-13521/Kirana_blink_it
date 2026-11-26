@@ -20,7 +20,7 @@ capacity.get('/admin/capacity',async c=>{
     measure('Image payload bytes',media?.bytes??null,201326592),
     measure('Stored image versions',media?.files??null,6500),
     measure('Image uploads today',media?.uploads??null,300),
-    measure('Routing credits today',used('routing'),routingCreditCap),
+    measure('Routing credits reserved today',used('routing'),routingCreditCap),
     measure('Google sign-in attempts today',used('google-oauth'),2000),
     measure('Razorpay checkout order attempts today',used('razorpay-order'),c.env.RAZORPAY_MODE==='live'?1200:200),
     measure('Razorpay test link attempts today',used('razorpay-link'),30),

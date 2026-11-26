@@ -7,11 +7,12 @@ import { Empty,ErrorText,Heading,Status,Success } from './ui'
 
 type Stop={id:string;rank:number;status:string;address:Address}
 type Point={latitude:number;longitude:number}
+type Suggestion={ids:string[];seconds:number;meters:number}
 export function RiderDashboard({account,shop}:{account:Account;shop:Shop}){
   const [route,setRoute]=useState<{origin:Point;orders:Stop[];summary:{completed:number;cash:number;active:number}}|null>(null)
   const [rows,setRows]=useState<OrderRow[]>([]),[error,setError]=useState(''),[ok,setOk]=useState('')
   const [opening,setOpening]=useState<string|null>(null),[busy,setBusy]=useState(false)
-  const [suggestion,setSuggestion]=useState<{ids:string[];seconds:number}|null>(null)
+  const [suggestion,setSuggestion]=useState<Suggestion|null>(null)
   const [cursor,setCursor]=useState<string|null>(null),[loadingHistory,setLoadingHistory]=useState(false)
   const load=async()=>{
     setError('')
@@ -30,7 +31,7 @@ export function RiderDashboard({account,shop}:{account:Account;shop:Shop}){
   }
   async function suggest(){
     setBusy(true);setError('');setOk('');setSuggestion(null)
-    try{setSuggestion(await send<{ids:string[];seconds:number}>('/rider/route/suggest'))}
+    try{setSuggestion(await send<Suggestion>('/rider/route/suggest'))}
     catch(e){setError(message(e))}finally{setBusy(false)}
   }
   const shift=(index:number,delta:number)=>{
@@ -53,16 +54,16 @@ export function RiderDashboard({account,shop}:{account:Account;shop:Shop}){
     <div className="metric-grid rider-metrics"><div className="metric metric-green"><Truck size={20}/><span>Active stops</span><strong>{route?.summary.active??0}</strong></div>
       <div className="metric metric-yellow"><PackageCheck size={20}/><span>Completed today</span><strong>{route?.summary.completed??0}</strong></div>
       <div className="metric metric-blue"><Wallet size={20}/><span>Cash to hand over</span><strong>{rupee(route?.summary.cash??0)}</strong></div></div>
-    <Heading title="Route stops" detail="Suggest a route by road travel time, or arrange your stops manually."
-      action={route&&route.orders.length>1&&route.orders.length<=12?<button className="button secondary" disabled={busy} onClick={()=>void suggest()}><Route size={17}/> Suggest stop order</button>:undefined}/>
+    <Heading title="Route stops" detail="Group nearby pinned stops by road travel time, or arrange stops manually."
+      action={route&&route.orders.length>1?<button className="button secondary" disabled={busy} onClick={()=>void suggest()}><Route size={17}/> Suggest next run</button>:undefined}/>
     {suggestion&&route&&<div className="panel padded stack">
-      <strong>Suggested driving order · {Math.max(1,Math.round(suggestion.seconds/60))} min</strong>
+      <strong>Suggested run · {Math.ceil(suggestion.seconds/60)} min · {(suggestion.meters/1000).toLocaleString('en-IN',{maximumFractionDigits:1})} km</strong>
       <p>{suggestion.ids.map(displayOrder).join(' → ')}</p>
       <small><a href="https://www.geoapify.com/" target="_blank" rel="noreferrer">Geoapify</a> · © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap contributors</a></small>
       <button className="button secondary align-start" disabled={busy} onClick={()=>{
-        const stops=suggestion.ids.flatMap(id=>route.orders.filter(stop=>stop.id===id))
-        if(stops.length===route.orders.length)void save(stops)
-      }}>Save suggested order</button>
+        const suggested=suggestion.ids.flatMap(id=>route.orders.filter(stop=>stop.id===id))
+        if(suggested.length===suggestion.ids.length)void save([...suggested,...route.orders.filter(stop=>!suggestion.ids.includes(stop.id))])
+      }}>Save suggested run</button>
     </div>}
     {!route?.orders.length?<div className="panel"><Empty title="No active stops" detail="Ready orders assigned by the owner will appear here."/></div>:<div className="stop-list">
       {route.orders.map((stop,index)=><article className="panel padded route-stop" key={stop.id}><div className="stop-number">{index+1}</div>

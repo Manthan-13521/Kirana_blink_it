@@ -25,7 +25,7 @@ async function signingKey(kid:string){
     // Refresh on a new key, with a short floor to avoid repeated network calls.
     if(googleKeys.expires-now()>840)return null
   }
-  const r=await fetch('https://www.googleapis.com/oauth2/v3/certs',{redirect:'error',signal:AbortSignal.timeout(6000)})
+  const r=await fetch('https://www.googleapis.com/oauth2/v3/certs',{redirect:'manual',signal:AbortSignal.timeout(6000)})
   if(!r.ok)throw invalid()
   const data=await r.json<{keys?:GoogleKey[]}>()
   if(!Array.isArray(data.keys)||data.keys.length>20)throw invalid()
@@ -142,7 +142,7 @@ googleAuth.get('/auth/google/callback',async c=>{
   if(!pending)throw new Problem(400,'This sign-in link has expired or was already used.')
   deleteCookie(c,oauthCookie,{path:'/',secure:true,httpOnly:true,sameSite:'Lax'})
   const grant=await fetch('https://oauth2.googleapis.com/token',{
-    method:'POST',redirect:'error',signal:AbortSignal.timeout(8000),
+    method:'POST',redirect:'manual',signal:AbortSignal.timeout(8000),
     body:new URLSearchParams({grant_type:'authorization_code',client_id:config.clientId,client_secret:config.secret,code,code_verifier:pending.verifier,redirect_uri:config.redirect}),
   })
   if(!grant.ok)throw invalid()

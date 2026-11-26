@@ -9,23 +9,46 @@ registerHooks({resolve(specifier,context,next){
   if(context.parentURL?.includes('/worker/')&&specifier.startsWith('./')&&!specifier.endsWith('.ts'))return next(specifier+'.ts',context)
   return next(specifier,context)
 }})
-const { optimizeMatrix,roadTimes }=await import('../worker/routing.ts')
+const { distinctDestinations,nearbyStops,optimizeMatrix,roadTimes,routeCredits }=await import('../worker/routing.ts')
 const { pushEndpoint,vapidHeader }=await import('../worker/push.ts')
 const { validWebhook }=await import('../worker/razorpay.ts')
 
-test('road ordering uses asymmetric driving times and only sends coordinates',async()=>{
+test('road ordering minimizes driving time and meters without requesting depot-return legs',async()=>{
   const locations=[[78.41,17.41],[78.43,17.45],[78.46,17.44]]
   const response=await roadTimes('fixture-token',locations,async(url,init)=>{
-    assert.equal(new URL(url).origin,'https://api.geoapify.com')
-    assert.equal(init.redirect,'error')
+    assert.equal(url,'https://api.geoapify.com/v1/routematrix')
+    assert.equal(init.headers['x-api-key'],'fixture-token')
+    assert.equal(init.redirect,'manual')
     const data=JSON.parse(init.body)
     assert.deepEqual(data.sources.map(x=>x.location),locations)
-    const times=[[0,12,3],[5,0,4],[9,2,0]]
-    return Response.json({sources_to_targets:times.map((row,i)=>row.map((time,j)=>({time,distance:700,from_index:i,to_index:j})))})
+    assert.deepEqual(data.targets.map(x=>x.location),locations.slice(1))
+    const times=[[12,3],[0,4],[2,0]]
+    const meters=[[900,700],[0,800],[300,0]]
+    return Response.json({sources_to_targets:times.map((row,i)=>row.map((time,j)=>({time,distance:meters[i][j],from_index:i,to_index:j})))})
   })
-  assert.deepEqual(optimizeMatrix(response),{indices:[2,1],seconds:5})
+  assert.deepEqual(optimizeMatrix(response),{indices:[2,1],seconds:5,meters:1000})
+  const leg=(seconds,meters)=>({seconds,meters})
+  const zero=leg(0,0)
+  assert.deepEqual(optimizeMatrix([[zero,leg(1,8),leg(1,2)],[zero,zero,leg(1,1)],[zero,leg(1,1),zero]]),
+    {indices:[2,1],seconds:2,meters:3})
   await assert.rejects(roadTimes('fake',locations,async()=>Response.json({sources_to_targets:[]})),/incomplete matrix/)
   await assert.rejects(roadTimes('fake',locations,async()=>new Response(null,{status:429})),/unavailable/)
+  await assert.rejects(roadTimes('fake',locations,async()=>new Response(null,{status:302})),{code:'geoapify_http_302'})
+})
+
+test('nearby batches preserve the dispatch anchor and bill once per distinct destination',()=>{
+  const first={id:'oldest',location:[78.42,17.41]}
+  const far={id:'far',location:[78.50,17.41]}
+  const nearby=Array.from({length:12},(_,i)=>({id:'near-'+i,location:[78.42+i/1000,17.41]}))
+  const chosen=nearbyStops([first,far,...nearby])
+  assert.equal(chosen.length,12)
+  assert.equal(chosen[0],first)
+  assert.ok(!chosen.includes(far))
+  assert.equal(chosen.includes(nearby[11]),false)
+  const unique=distinctDestinations(chosen)
+  assert.deepEqual(unique[0].ids,['oldest','near-0'])
+  assert.equal(unique.length,11)
+  assert.deepEqual([2,5,12].map(routeCredits),[6,30,130])
 })
 
 test('push destination allowlist and signed VAPID assertion keep user data out of pushes',async()=>{
@@ -117,6 +140,7 @@ async function integrationFixture(t){
     sqlite.exec(await readFile(new URL(file,directory),'utf8'))
   }
   const bind=(sql,params)=>({
+    all:async()=>({results:sqlite.prepare(sql).all(...params)}),
     first:async()=>sqlite.prepare(sql).get(...params)??null,
     run:async()=>({meta:{changes:Number(sqlite.prepare(sql).run(...params).changes)}}),
   })
@@ -263,6 +287,7 @@ test('Standard Checkout retries one provider order and accepts only matching cap
   globalThis.fetch=async (url,init)=>{
     const path=new URL(url)
     assert.equal(path.origin,'https://api.razorpay.com')
+    assert.equal(init.redirect,'manual')
     if(path.pathname==='/v1/orders'&&init.method==='POST'){
       creates++
       assert.deepEqual(JSON.parse(init.body),{amount:4300,currency:'INR',receipt:orderId,partial_payment:false})
@@ -387,4 +412,54 @@ test('live webhooks record retries, late captures and refund lifecycle without m
   assert.equal(row(lateId).payment_status,'refunded')
   assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM refunds WHERE order_id=?').get(lateId).n,1)
 
+})
+
+test('authenticated route suggestions reuse cached road plans and preserve manual fallback below the quota cap',async t=>{
+  const {Hono}=await import('hono')
+  const {routing,routingCreditCap}=await import('../worker/routing.ts')
+  const {sqlite,db}=await integrationFixture(t)
+  const time=Math.floor(Date.now()/1000)
+  const ids=['11111111-1111-4111-8111-111111111111','22222222-2222-4222-8222-222222222222','33333333-3333-4333-8333-333333333333']
+  const coordinates=[[78.419,17.415],[78.419,17.415],[78.436,17.421]]
+  for(const [index,id] of ids.entries()){
+    seedPending(sqlite,id,time)
+    sqlite.prepare("UPDATE orders SET status='ready',assigned_to='demo-rider',fulfillment='delivery',route_rank=?,address_json=? WHERE id=?")
+      .run(index+1,JSON.stringify({longitude:coordinates[index][0],latitude:coordinates[index][1]}),id)
+  }
+  const original=globalThis.fetch
+  t.after(()=>{globalThis.fetch=original})
+  let calls=0
+  globalThis.fetch=async (_url,{body})=>{
+    calls++
+    const points=JSON.parse(body)
+    assert.equal(points.sources.length,3)
+    assert.equal(points.targets.length,2)
+    return Response.json({sources_to_targets:[
+      [{time:91,distance:859},{time:512,distance:7344}],
+      [{time:0,distance:0},{time:436,distance:6243}],
+      [{time:241,distance:3397},{time:0,distance:0}],
+    ]})
+  }
+  const app=new Hono()
+  app.use('*',async(c,next)=>{c.set('account',{id:'demo-rider',role:'rider'});await next()})
+  app.onError((err,c)=>c.json({error:err.message},err.status??500))
+  app.route('/',routing)
+  const request=(key='fixture-key')=>app.request('/rider/route/suggest',{method:'POST'},{DB:db,GEOAPIFY_KEY:key})
+  const first=await request()
+  assert.equal(first.status,200)
+  assert.deepEqual(await first.json(),{ids,seconds:527,meters:7102,credits:6,provider:'Geoapify'})
+  sqlite.prepare('UPDATE orders SET route_rank=8 WHERE id=?').run(ids[0])
+  const cached=await request()
+  assert.equal(cached.status,200)
+  assert.deepEqual(await cached.json(),{ids:[ids[1],ids[0],ids[2]],seconds:527,meters:7102,credits:0,provider:'Geoapify'})
+  assert.equal(sqlite.prepare("SELECT used FROM service_budget WHERE service='routing'").get().used,6)
+  sqlite.prepare("UPDATE service_budget SET used=?,last_at=0 WHERE service='routing'").run(routingCreditCap)
+  sqlite.exec('UPDATE routing_cache SET expires_at=0')
+  const limited=await request()
+  assert.equal(limited.status,429)
+  assert.match((await limited.json()).error,/Arrange stops manually/)
+  assert.equal(calls,1)
+  const unconfigured=await request('')
+  assert.equal(unconfigured.status,503)
+  assert.match((await unconfigured.json()).error,/Arrange stops manually/)
 })

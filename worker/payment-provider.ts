@@ -28,7 +28,7 @@ export async function validWebhook(body:ArrayBuffer,signature:string,secret:stri
   return crypto.subtle.verify('HMAC',key,bytes,body)
 }
 export function provider(credentials:Credentials,path:string,options:RequestInit={}){
-  return fetch('https://api.razorpay.com/v1'+path,{...options,redirect:'error',signal:AbortSignal.timeout(6500),
+  return fetch('https://api.razorpay.com/v1'+path,{...options,redirect:'manual',signal:AbortSignal.timeout(6500),
     headers:{Authorization:'Basic '+btoa(credentials.key+':'+credentials.secret),'Content-Type':'application/json',...options.headers}})
 }
 export function safePaymentLink(url:unknown):url is string{
