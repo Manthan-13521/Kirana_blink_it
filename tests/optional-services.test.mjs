@@ -246,6 +246,9 @@ test('Google callback directs verified roles from each sign-in entry and enforce
   })
   const profile=email=>({sub:email.split('@')[0],email,email_verified:true})
   const oldCustomer=await resolveGoogleAccount(env,profile('owner@gmail.com'),'shop',null)
+  const priorSession='a'.repeat(64)
+  sqlite.prepare('INSERT INTO sessions(hash,account_id,expires_at) VALUES(?,?,?)')
+    .run(await digest(priorSession),oldCustomer,Math.floor(Date.now()/1000)+600)
   for(const [workspace,email,checkout,path,role] of [
     ['shop','owner@gmail.com',true,'/owner','owner'],
     ['rider','owner@gmail.com',false,'/owner','owner'],
@@ -263,7 +266,8 @@ test('Google callback directs verified roles from each sign-in entry and enforce
     const now=Math.floor(Date.now()/1000)
     claims={...profile(email),iss:'https://accounts.google.com',aud:client,nonce:state,iat:now-1,exp:now+300}
     const callback='/api/auth/google/callback?code=fixture&state='+state
-    const result=await request(callback,{headers:{Cookie:startCookie}})
+    const switchAccount=workspace==='shop'&&role==='owner'
+    const result=await request(callback,{headers:{Cookie:startCookie+(switchAccount?'; kirana_session='+priorSession:'')}})
     assert.equal(result.status,303)
     assert.equal(result.headers.get('location'),path)
     const session=result.headers.getSetCookie().find(value=>value.startsWith('kirana_session='))
@@ -273,11 +277,16 @@ test('Google callback directs verified roles from each sign-in entry and enforce
     const me=await (await request('/api/me',optionsWithSession)).json()
     assert.equal(me.account.role,role)
     assert.notEqual(me.account.id,oldCustomer)
+    if(switchAccount)assert.equal((await (await request('/api/me',{headers:{Cookie:'kirana_session='+priorSession}})).json()).account,null)
     const stored=sqlite.prepare('SELECT staging_checkout FROM sessions WHERE hash=?').get(await digest(cookie.split('=')[1]))
     assert.equal(Boolean(stored.staging_checkout),email==='shopper@gmail.com')
     assert.equal((await request('/api/admin/settings',optionsWithSession)).status,role==='owner'?200:403)
     assert.equal((await request('/api/rider/route',optionsWithSession)).status,role==='customer'?403:200)
     assert.equal((await request(callback,{headers:{Cookie:startCookie}})).status,400)
+    if(email==='other@gmail.com'){
+      sqlite.prepare('UPDATE sessions SET expires_at=0 WHERE hash=?').run(await digest(cookie.split('=')[1]))
+      assert.equal((await request('/api/admin/settings',optionsWithSession)).status,401)
+    }
     assert.equal((await request('/api/auth/logout',{method:'POST',headers:{Origin:origin,Cookie:cookie}})).status,200)
     assert.equal((await (await request('/api/me',optionsWithSession)).json()).account,null)
   }
@@ -428,6 +437,10 @@ test('Standard Checkout retries one provider order and accepts only matching cap
       assert.ok(recover)
       return Response.json({items:[providerOrder]})
     }
+    if(path.pathname==='/v1/orders/'+providerId+'/payments'){
+      const payment={id:paymentId,order_id:providerId,amount:readAmount,currency:'INR',status:paymentStatus}
+      return Response.json({items:[payment]})
+    }
     assert.equal(path.pathname,'/v1/payments/'+paymentId)
     return Response.json({id:paymentId,order_id:providerId,amount:readAmount,currency:'INR',status:paymentStatus})
   }
@@ -450,6 +463,10 @@ test('Standard Checkout retries one provider order and accepts only matching cap
   assert.equal(creates,1)
   assert.equal(retrieves,1)
   assert.equal((await post()).status,200)
+  sqlite.exec('UPDATE settings SET enable_pickup=0')
+  assert.equal((await post()).status,409)
+  assert.equal((await post('/reconcile',{}, {'x-fixture-account':'another-account'})).status,404)
+  assert.deepEqual(await (await post('/reconcile')).json(),{verified:false})
   const signature=createHmac('sha256',secret).update(providerId+'|'+paymentId).digest('hex')
   const proof={razorpay_order_id:providerId,razorpay_payment_id:paymentId,razorpay_signature:signature}
   assert.equal((await post('/verify',{...proof,razorpay_order_id:'order_other123'})).status,403)
@@ -460,11 +477,15 @@ test('Standard Checkout retries one provider order and accepts only matching cap
   assert.equal((await post('/verify',proof)).status,202)
   assert.equal(sqlite.prepare('SELECT status FROM orders WHERE id=?').get(orderId).status,'awaiting_payment')
   paymentStatus='captured'
+  sqlite.exec("DELETE FROM service_budget WHERE service='razorpay-customer-status'")
+  assert.deepEqual(await (await post('/reconcile')).json(),{verified:true})
+  assert.deepEqual(await (await post('/reconcile')).json(),{verified:true})
   assert.deepEqual(await (await post('/verify',proof)).json(),{state:'confirmed'})
   assert.deepEqual(await (await post('/verify',proof)).json(),{state:'confirmed'})
   assert.equal((await post('/cancel')).status,409)
 
   const liveId='77777777-7777-4777-8777-777777777777'
+  sqlite.exec('UPDATE settings SET enable_pickup=1')
   seedPending(sqlite,liveId,time)
   const liveEnv={...env,RAZORPAY_MODE:'live',RAZORPAY_KEY_ID:'rzp_live_Fixture',RAZORPAY_LIVE_CHECKOUT:'enabled'}
   const conf='config_UPIFixture'
@@ -483,6 +504,20 @@ test('Standard Checkout retries one provider order and accepts only matching cap
   assert.equal((await live({RAZORPAY_UPI_CONFIG_ID:conf})).status,200)
   assert.equal((await live({RAZORPAY_UPI_CONFIG_ID:'config_NextFixture'})).status,409)
   assert.equal(liveCalls,1)
+  const disabledInFlight='88888888-8888-4888-8888-888888888888'
+  seedPending(sqlite,disabledInFlight,time)
+  globalThis.fetch=async(url,init)=>{
+    assert.equal(new URL(url).pathname,'/v1/orders')
+    const body=JSON.parse(init.body)
+    assert.equal(body.receipt,disabledInFlight)
+    sqlite.exec('UPDATE settings SET enable_online=0,revision=revision+1')
+    return Response.json({...providerOrder,id:'order_blockedFixture',receipt:disabledInFlight,notes:body.notes})
+  }
+  const payPath='/orders/'+disabledInFlight+'/payment'
+  const request={method:'POST',headers:{'x-fixture-preview':'yes'}}
+  assert.equal((await app.request(payPath,request,{...liveEnv,RAZORPAY_UPI_CONFIG_ID:conf})).status,409)
+  assert.equal((await app.request(payPath,request,{...liveEnv,RAZORPAY_UPI_CONFIG_ID:conf})).status,409)
+  assert.equal(sqlite.prepare('SELECT provider_order_id FROM order_checkout_payments WHERE order_id=?').get(disabledInFlight).provider_order_id,'order_blockedFixture')
 })
 
 function seedPending(db,id,time){

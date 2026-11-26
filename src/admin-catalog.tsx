@@ -113,6 +113,7 @@ function ProductForm({product,categories,canArchive,close,saved}:{product:Draft;
       </div>
       <details className="product-options"><summary>More product options</summary><div className="form-grid">
         {text('brand','Brand')}{text('subcategory','Subcategory',false,70)}{num('mrp','MRP (₹) · 0 uses selling price',0,true)}
+        <label>Variant group<input value={value.variant_group??''} onChange={e=>change('variant_group',e.target.value)} maxLength={60}/><small>Use the same group on each pack or variant. Each SKU keeps its own price and stock.</small></label>
         {num('threshold','Low-stock warning')}{num('min_steps','Minimum packs',1)}{num('max_steps','Maximum packs',1)}
         {num('tax_bps','GST (%)',0,true)}{text('hsn','HSN',false,12)}
         <label>Expiry date<input type="date" value={value.expiry??''} onChange={e=>change('expiry',e.target.value||null)}/></label>
@@ -142,10 +143,14 @@ function ProductForm({product,categories,canArchive,close,saved}:{product:Draft;
 }
 
 function StockForm({product,close,saved}:{product:Product;close:()=>void;saved:()=>void}){
-  const [entries,setEntries]=useState<{id:number;quantity:number;reason:string}[]>([]),[error,setError]=useState(''),[busy,setBusy]=useState(false)
-  useEffect(()=>{api<typeof entries>('/admin/products/'+product.id+'/stock').then(setEntries,e=>setError(message(e)))},[product.id])
+  const [summary,setSummary]=useState<{available:number;reserved:number;events:{id:number;quantity:number;reason:string}[]} | null>(null)
+  const [error,setError]=useState(''),[busy,setBusy]=useState(false)
+  useEffect(()=>{api<NonNullable<typeof summary>>('/admin/products/'+product.id+'/stock?summary=1').then(setSummary,e=>setError(message(e)))},[product.id])
+  const entries=summary?.events??[]
   return <Sheet title={'Stock · '+product.name} onClose={close}><div className="stack">
-    <p className="info-box">Available: {product.stock} {product.unit}</p><ErrorText text={error}/>
+    <div className="info-box stack compact"><span>Available to sell · {summary?.available??product.stock} {product.unit}</span>
+      {summary&&<span>Reserved for open orders · {summary.reserved} {product.unit}</span>}
+    </div><ErrorText text={error}/>
     <form className="stack" onSubmit={async e=>{
       e.preventDefault();setBusy(true);setError('')
       const data=new FormData(e.currentTarget)

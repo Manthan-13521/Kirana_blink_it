@@ -34,6 +34,8 @@ const queries = {
   'two-token prefix search': ["SELECT products.id,name FROM search_prefixes AS match CROSS JOIN products ON products.id=match.product_id WHERE match.prefix=? AND match.product_id>? AND active=1 AND EXISTS (SELECT 1 FROM search_prefixes extra WHERE extra.product_id=products.id AND extra.prefix=?) ORDER BY match.product_id LIMIT 13",['1012','','benchmark']],
   'catalog stock read for quote': ["SELECT * FROM products WHERE id IN (?,?,?,?,?,?) AND active=1",['milk','rice','load-0115','load-0211','load-0001','load-0190']],
   'product media retention': ["SELECT image FROM products WHERE image IN (?,?)",['/media/example','/media/another']],
+  'variant pack lookup': ["SELECT id,step FROM products WHERE variant_group=? AND active=1 AND variant_group<>'' AND (expiry IS NULL OR expiry>=date('now','+330 minutes')) ORDER BY step,id LIMIT 24",['test pack']],
+  'reserved inventory lookup': ["SELECT SUM(i.quantity) FROM orders o JOIN order_items i ON i.order_id=o.id AND i.product_id=? WHERE o.stocked=1 AND o.status IN ('awaiting_payment','placed','accepted','packing','ready','out_for_delivery')",['milk']],
   'basket rehydration': ["SELECT p.id, p.price FROM carts JOIN json_each(carts.items) j JOIN products p ON p.id=json_extract(j.value,'$.id') WHERE carts.account_id=? AND carts.updated_at>?",['demo-customer',1800000000]],
   'active rider cash collection': ["SELECT SUM(total) FROM orders WHERE assigned_to=? AND fulfillment='delivery' AND payment_status='cash_collected' AND reconciled=0",['demo-rider']],
   'completion activity since midnight': ["SELECT status FROM order_events INDEXED BY completed_events_recent WHERE status='completed' AND created_at>=?",[1800015000]],

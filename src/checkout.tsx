@@ -49,6 +49,10 @@ export function Cart({shop,refreshShop,account,cart,change,onClose,requireLogin,
   const [availability,setAvailability]=useState<'checking'|'ready'|'error'>('checking')
   const canOrder=availability==='ready'&&Boolean(shop.accepting&&(delivery||pickup))
   const [method,setMethod]=useState<'cash'|'online'>(shop.enable_cod?'cash':'online')
+  useEffect(()=>{
+    if(method==='cash'&&!shop.enable_cod&&shop.enable_online)setMethod('online')
+    if(method==='online'&&!shop.enable_online&&shop.enable_cod)setMethod('cash')
+  },[method,shop.enable_cod,shop.enable_online])
   const [addresses,setAddresses]=useState<Address[]>([])
   const [addressId,setAddress]=useState('')
   const [adding,setAdding]=useState(false)
@@ -118,7 +122,7 @@ export function Cart({shop,refreshShop,account,cart,change,onClose,requireLogin,
         if(!abort.signal.aborted){
           setError(message(e))
           const code=(e as {code?:string}).code
-          if(code==='fulfillment_unavailable'||code==='store_paused')void refreshShop().catch(()=>{})
+          if(code==='fulfillment_unavailable'||code==='store_paused'||code==='payment_unavailable')void refreshShop().catch(()=>{})
         }
       }
       finally{if(!abort.signal.aborted)setChecking(false)}
@@ -138,11 +142,11 @@ export function Cart({shop,refreshShop,account,cart,change,onClose,requireLogin,
       complete(result.id)
     }catch(e){
       setError(message(e))
-      if((e as {status?:number}).status===409){
+      const code=(e as {code?:string}).code
+      if((e as {status?:number}).status===409||code==='payment_unavailable'){
         sessionStorage.removeItem(draftKey)
         setQuote(null);setReviewedPayload('')
-        const code=(e as {code?:string}).code
-        if(code==='fulfillment_unavailable'||code==='store_paused'||code==='quote_changed')void refreshShop().catch(()=>{})
+        if(code==='fulfillment_unavailable'||code==='store_paused'||code==='payment_unavailable'||code==='quote_changed')void refreshShop().catch(()=>{})
         setSlotRevision(n=>n+1)
       }
     }finally{setBusy(false)}
@@ -238,6 +242,17 @@ export function OrderView({orderId,onClose,account,shop,local=false,extra,reorde
     }catch(e){setError(message(e))}
     finally{await refresh();setBusy(false)}
   }
+  async function checkPayment(){
+    setBusy(true);setError('');setOk('')
+    try{
+      const prefix=account.role==='owner'?'/admin/orders/':'/orders/'
+      const result=await send<{verified:boolean}>(prefix+orderId+'/payment/reconcile',{})
+      await refresh()
+      setOk(result.verified?'Razorpay verified the payment.':'Razorpay has not confirmed a capture yet.')
+    }catch(e){setError(message(e))}finally{setBusy(false)}
+  }
+  const canPay=Boolean(shop.accepting&&shop.enable_online&&(
+    order?.fulfillment==='pickup'?shop.enable_pickup:shop.enable_delivery))
   return <Sheet title={'Order '+displayOrder(orderId)} onClose={busy?()=>{}:onClose} wide suspended={paymentOverlay}>
     <ErrorText text={error}/><Success text={ok}/>
     {!order&&!error&&<p>Loading order…</p>}
@@ -254,9 +269,11 @@ export function OrderView({orderId,onClose,account,shop,local=false,extra,reorde
       {account.role==='customer'&&local&&order.status==='awaiting_payment'&&<div className="info-box stack compact"><b>Local payment simulator</b><span>No money is collected.</span><div className="actions"><button className="button primary" disabled={busy} onClick={()=>void operate(()=>send('/orders/'+orderId+'/test-payment',{result:'paid'}),'Test payment completed.')}>Simulate success</button><button className="button secondary" disabled={busy} onClick={()=>void operate(()=>send('/orders/'+orderId+'/test-payment',{result:'failed'}),'Test payment cancelled.')}>Simulate failure</button></div></div>}
       {account.role==='customer'&&!local&&order.status==='awaiting_payment'&&<div className="info-box stack compact">
         <b>Pay securely with Razorpay</b>
-        <span>{order.paymentFailed?'A payment attempt failed. You can retry while this reservation is open.':'Your items are reserved for up to 15 minutes. Check this order before retrying if payment is interrupted.'}</span>
+        <span>{!canPay?'The store is currently unable to start this payment. You can still check a previous payment or cancel the reservation.':
+          order.paymentFailed?'A payment attempt failed. You can retry while this reservation is open.':'Your items are reserved for up to 15 minutes. Check this order before retrying if payment is interrupted.'}</span>
         <div className="actions">
-          <button className="button primary" disabled={busy} onClick={()=>void pay()}>Pay {rupee(order.total)}</button>
+          <button className="button primary" disabled={busy||!canPay} onClick={()=>void pay()}>Pay {rupee(order.total)}</button>
+          {order.canReconcilePayment&&<button className="button secondary" disabled={busy} onClick={()=>void checkPayment()}>Check Razorpay payment</button>}
           <button className="button secondary" disabled={busy} onClick={()=>void operate(
             ()=>send('/orders/'+orderId+'/payment/cancel',{}),'Reservation cancelled.'
           )}>Cancel reservation</button>
@@ -269,9 +286,7 @@ export function OrderView({orderId,onClose,account,shop,local=false,extra,reorde
           void operate(()=>send('/admin/payments/refunds/'+refund.id+'/submit',{}),'Refund status refreshed.')
         }
       }}>{refund.status==='queued'?'Submit live refund':'Check live refund'} · {rupee(refund.amount)}</button>)}
-      {account.role==='owner'&&order.canReconcilePayment&&<button className="button secondary" disabled={busy} onClick={()=>void operate(
-        ()=>send('/admin/orders/'+orderId+'/payment/reconcile',{}),'Payment status refreshed.'
-      )}>Check Razorpay payment</button>}
+      {account.role==='owner'&&order.canReconcilePayment&&<button className="button secondary" disabled={busy} onClick={()=>void checkPayment()}>Check Razorpay payment</button>}
       {extra?.(order,refresh)}
       {account.role!=='rider'&&order.status!=='awaiting_payment'&&<div className="actions">
         {['completed','placed','accepted','packing','ready','out_for_delivery'].includes(order.status)&&<button className="button secondary" onClick={()=>void operate(()=>invoice(order),'Bill downloaded.')}><FileDown size={16}/> Download bill</button>}

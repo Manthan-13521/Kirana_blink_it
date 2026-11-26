@@ -42,6 +42,17 @@ export function Storefront({shop,refreshShop,account,query,setQuery,cart,setCart
   const [error,setError]=useState('')
   const [loading,setLoading]=useState(true)
   const [selected,setSelected]=useState<Product|null>(null)
+  const [variantChoices,setVariantChoices]=useState<{group:string;products:Product[];error?:string}|null>(null)
+  const variantGroup=selected?.variant_group
+  useEffect(()=>{
+    if(!variantGroup||!selected){setVariantChoices(null);return}
+    const request=new AbortController()
+    api<{variants:Product[]}>('/catalog/'+selected.id+'?variants=1',{signal:request.signal})
+      .then(result=>setVariantChoices({group:variantGroup,products:result.variants}),()=>{
+        if(!request.signal.aborted)setVariantChoices({group:variantGroup,products:[],error:'Pack sizes are temporarily unavailable.'})
+      })
+    return ()=>request.abort()
+  },[variantGroup])
   const [debounced,setDebounced]=useState(query)
   const nextRequest=useRef<AbortController|null>(null)
   useEffect(()=>{api<Category[]>('/categories').then(setCategories,e=>setError(message(e)))},[])
@@ -123,6 +134,15 @@ export function Storefront({shop,refreshShop,account,query,setQuery,cart,setCart
     {count>0&&<button className="mobile-cart" onClick={()=>openCart(true)}><ShoppingBasket size={21}/><span>{count} {count===1?'item':'items'} · {rupee(total)}</span><b>View basket <ArrowRight size={17}/></b></button>}
     {selected&&<Sheet title={selected.name} onClose={()=>setSelected(null)}>
       <div className="detail-image">{photo(selected)}</div><p className="muted">{selected.brand} · {pack(selected.unit,selected.step)}</p>
+      {variantGroup&&variantChoices?.group===variantGroup&&<>
+        <ErrorText text={variantChoices.error??''}/>
+        {variantChoices.products.length>1&&<div className="chips" aria-label="Product variants">
+          {variantChoices.products.map(product=><button type="button" key={product.id}
+            aria-pressed={selected.id===product.id} className={'chip '+(selected.id===product.id?'active':'')} onClick={()=>setSelected(product)}>
+            {product.name!==selected.name?product.name+' · ':''}{pack(product.unit,product.step)} · {rupee(product.price)}
+          </button>)}
+        </div>}
+      </>}
       <p>{selected.description}</p><div className="summary-line"><strong>{rupee(selected.price)}</strong><Quantity name={selected.name} count={cart.find(l=>l.product.id===selected.id)?.steps??0} onChange={n=>change(selected,n)} min={selected.min_steps} max={Math.min(selected.max_steps,Math.floor(selected.stock/selected.step))} disabled={selected.stock<selected.step*selected.min_steps}/></div>
     </Sheet>}
     {cartOpen&&<Cart shop={shop} refreshShop={refreshShop} account={account} startAtCheckout={startCheckout} cart={cart} change={change} onClose={()=>openCart(false)} requireLogin={requireLogin} complete={oid=>{setCart([]);openCart(false);openOrder(oid)}}/>}

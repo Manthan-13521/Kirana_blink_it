@@ -61,8 +61,10 @@ export function application(localRoutes?:Hono<Env>) {
   api.get('/health',c=>c.json({ok:true,mode:localhost(c)?'local':'configured'}))
   api.get('/store',async c=>{
     if(!localhost(c)&&!(c.env.APP_MODE==='staging'&&c.env.STAGING_CHECKOUT_EMAILS))c.header('Cache-Control','public, max-age=20')
+    const local=localhost(c)
     const settings=await publicSettings(c.env.DB)
-    return c.json({settings:{...settings,enable_online:Number(settings.enable_online&&(localhost(c)||Boolean(checkoutCredentials(c.env)))),accepting:Number(checkoutAccess(c)&&onlineOrderingAvailable(settings))},local:localhost(c)})
+    settings.enable_online=Number(settings.enable_online&&(local||Boolean(checkoutCredentials(c.env))))
+    return c.json({settings:{...settings,accepting:Number(checkoutAccess(c)&&onlineOrderingAvailable(settings))},local})
   })
   api.get('/me',c=>c.json({account:c.get('account')??null,local:localhost(c)}))
   api.post('/auth/logout',async c=>{
@@ -165,7 +167,6 @@ export function application(localRoutes?:Hono<Env>) {
       ...(data.enable_delivery===undefined?{}:{enable_delivery:I(data.enable_delivery,0,1,'home delivery setting')}),
       ...(data.enable_pickup===undefined?{}:{enable_pickup:I(data.enable_pickup,0,1,'store pickup setting')}),
     }
-    if(values.accepting&&!values.enable_cod&&!values.enable_online) throw new Problem(400,'Enable at least one payment method.')
     await db.batch([statement(db,'UPDATE settings SET '+Object.keys(values).map(k=>k+'=?').join(',')+',revision=revision+1 WHERE id=1',...Object.values(values)),audit(db,actor.id,'store.configure','settings')])
     return c.json({ok:true})
   })

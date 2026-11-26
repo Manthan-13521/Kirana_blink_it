@@ -1,4 +1,4 @@
-import { useEffect,useState } from 'react'
+import { useEffect,useRef,useState } from 'react'
 import { ArrowRight, BarChart3, Boxes, ClipboardList, FileDown, LayoutDashboard, Search, Settings2, ShoppingBag, Truck, Users, Wallet } from 'lucide-react'
 import { AdminCatalog } from './admin-catalog'
 import { OrderView } from './checkout'
@@ -77,12 +77,25 @@ function Metric({label,value,accent}:{label:string;value:string|number;accent:st
 
 function AdminOrders({open,revision}:{open:(id:string)=>void;revision:number}){
   const [status,setStatus]=useState('all'),[rows,setRows]=useState<OrderRow[]>([]),[next,setNext]=useState<string|null>(null),[error,setError]=useState('')
+  const paging=useRef(false),inFlight=useRef<AbortController|null>(null)
   const load=async(cursor?:string)=>{
-    try{const p=new URLSearchParams({status,...(cursor?{before:cursor}:{})});const data=await api<{orders:OrderRow[];next:string|null}>('/orders?'+p)
+    paging.current=Boolean(cursor)
+    inFlight.current?.abort()
+    const request=new AbortController()
+    inFlight.current=request
+    try{const p=new URLSearchParams({status,...(cursor?{before:cursor}:{})});const data=await api<{orders:OrderRow[];next:string|null}>('/orders?'+p,{signal:request.signal})
+      if(request.signal.aborted)return
       setRows(old=>cursor?[...old,...data.orders]:data.orders);setNext(data.next)
-    }catch(e){setError(message(e))}
+      setError('')
+    }catch(e){if(!request.signal.aborted)setError(message(e))}
   }
-  useEffect(()=>{void load()},[status,revision])
+  useEffect(()=>{
+    void load()
+    const refresh=()=>{if(!paging.current&&document.visibilityState==='visible')void load()}
+    const timer=setInterval(refresh,60000)
+    document.addEventListener('visibilitychange',refresh)
+    return ()=>{clearInterval(timer);document.removeEventListener('visibilitychange',refresh);inFlight.current?.abort()}
+  },[status,revision])
   return <section className="stack"><Heading title="Orders" detail="Fulfill online orders and reconcile collections." action={<button className="button secondary" onClick={()=>void load()}>Refresh</button>}/>
     <label className="inline-field">Status<select value={status} onChange={e=>setStatus(e.target.value)}>{['all','awaiting_payment','placed','accepted','packing','ready','out_for_delivery','completed','cancelled','rejected','failed'].map(s=><option key={s} value={s}>{pretty(s)}</option>)}</select></label>
     <ErrorText text={error}/>
@@ -274,7 +287,7 @@ function Setup({shop,refresh}:{shop:Shop;refresh:()=>Promise<void>}){
             <input type="checkbox" role="switch" checked={Boolean(value.enable_pickup)} onChange={e=>change('enable_pickup',Number(e.target.checked))}/>
           </label>
           {check('accepting','Accept online orders')}
-          <p><strong>After saving</strong> · {!value.accepting||(!value.enable_delivery&&!value.enable_pickup)
+          <p><strong>After saving</strong> · {!value.accepting||(!value.enable_delivery&&!value.enable_pickup)||(!value.enable_cod&&!value.enable_online)
             ?'Online ordering is temporarily unavailable.'
             :value.enable_delivery&&value.enable_pickup?'Home delivery and store pickup are available.'
             :value.enable_delivery?'Home delivery is available.':'Store pickup is available.'}</p>
@@ -285,6 +298,7 @@ function Setup({shop,refresh}:{shop:Shop;refresh:()=>Promise<void>}){
       </>}
       {step===2&&<div className="form-grid">{numeric('minimum_order','Minimum order (₹)',0,100000,'.01',true)}{numeric('delivery_fee','Delivery fee (₹)',0,1000,'.01',true)}{numeric('free_delivery','Free delivery threshold (₹)',0,100000,'.01',true)}
         {field('gstin','GSTIN')}{check('registered','GST registered')}{check('enable_cod','Enable cash payments')}{check('enable_online','Enable online payments')}
+        <small className="span-full">Checkout pauses when both payment methods are off.</small>
         <label className="span-full">Store policy<textarea rows={5} value={value.policy} onChange={e=>change('policy',e.target.value)} maxLength={1000}/></label></div>}
       <div className="actions"><button className="button primary" disabled={busy||!loaded}>Save settings</button>{step<2&&<button type="button" className="button secondary" onClick={()=>setStep(step+1)}>Next step <ArrowRight size={16}/></button>}</div>
     </form>

@@ -23,6 +23,7 @@ capacity.get('/admin/capacity',async c=>{
     measure('Routing credits reserved today',used('routing'),routingCreditCap),
     measure('Google sign-in attempts today',used('google-oauth'),2000),
     measure('Razorpay checkout order attempts today',used('razorpay-order'),c.env.RAZORPAY_MODE==='live'?1200:200),
+    measure('Shopper Razorpay status checks today',used('razorpay-customer-status'),480),
     measure('Razorpay test link attempts today',used('razorpay-link'),30),
     measure('Push deliveries attempted today',used('web-push'),pushDailyCap),
   ]})

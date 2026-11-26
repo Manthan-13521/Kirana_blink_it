@@ -119,6 +119,49 @@ test('approved cancellation releases paid stock and records exactly one full ref
   assert.equal(await stock('banana'),before)
 })
 
+test('pack variants share discovery while stock, checkout and cancellations use the selected SKU',async()=>{
+  const product={name:'Test pack family',category:'pantry',unit:'g',step:250,price:4300,stock:1000,variant_group:' Test Pack '}
+  const {id:small}=await action(owner,'/admin/products',{...product,sku:'TEST-VARIANT-S'},201)
+  const {id:large}=await action(owner,'/admin/products',{...product,sku:'TEST-VARIANT-L',variant_group:'test pack',step:500},201)
+  const current=await anonymous('/api/catalog/'+small)
+  assert.equal(current.variant_group,'test pack')
+  await action(owner,'/admin/products/'+large,{...product,sku:'TEST-VARIANT-L',step:500,variant_group:undefined},200,'PUT')
+  const variants=()=>anonymous('/api/catalog/'+small+'?variants=1')
+  assert.deepEqual((await variants()).variants.map(p=>p.id),[small,large])
+  const path='/api/admin/products/'+large+'/stock?summary=1'
+  await customer(path,{expected:403})
+  const {id}=await place(customer,{fulfillment:'pickup',method:'online',slot:await available('pickup'),items:[item(large)]})
+  let summary=await owner(path)
+  assert.deepEqual([summary.available,summary.reserved],[500,500])
+  assert.equal(await stock(small),1000)
+  await action(customer,'/orders/'+id+'/test-payment',{result:'paid'})
+  summary=await owner(path)
+  assert.deepEqual([summary.available,summary.reserved],[500,500])
+  await state(owner,id,'cancelled')
+  summary=await owner(path)
+  assert.deepEqual([summary.available,summary.reserved],[1000,0])
+  await owner('/api/admin/products/'+large,{method:'DELETE'})
+  assert.deepEqual((await variants()).variants.map(p=>p.id),[small])
+})
+
+test('switching off both payment methods closes online checkout without blocking counter sales',async()=>{
+  const settings=await owner('/api/admin/settings')
+  const checkout={fulfillment:'pickup',method:'cash',slot:await available('pickup'),items:[item('milk')]}
+  const {version}=await action(customer,'/quote',checkout)
+  try{
+    await action(owner,'/admin/settings',{...settings,enable_cod:0,enable_online:0},200,'PUT')
+    assert.equal((await anonymous('/api/store')).settings.accepting,0)
+    assert.deepEqual(await customer('/api/slots?mode=pickup'),[])
+    await action(customer,'/quote',checkout,409)
+    await action(customer,'/orders',{...checkout,version,key:crypto.randomUUID()},409)
+    await place(owner,pos([item('milk')]))
+    await action(owner,'/admin/settings',{...settings,enable_cod:0,enable_online:1},200,'PUT')
+    assert.equal((await anonymous('/api/store')).settings.accepting,1)
+    await action(customer,'/quote',checkout,409)
+    await action(customer,'/quote',{...checkout,method:'online'})
+  }finally{await action(owner,'/admin/settings',settings,200,'PUT')}
+})
+
 test('expired stock and stale store quotes are rejected; shortages create a notice',async()=>{
   const {id:expired}=await action(owner,'/admin/products',{sku:'OLD-001',name:'Expired package',category:'fresh',unit:'pc',step:1,price:4000,stock:6,expiry:'2000-01-01'},201)
   await anonymous('/api/catalog/'+expired,{expected:404})

@@ -48,6 +48,7 @@ export type Shop = {
 }
 export type Product = {
   id: string; sku: string; name: string; brand: string; description: string; category: string
+  variant_group?: string
   subcategory: string; unit: 'g'|'ml'|'pc'; step: number; price: number; mrp: number
   stock: number; threshold: number; min_steps: number; max_steps: number; tax_bps: number
   hsn: string; image: string|null; active: number; featured: number; expiry: string|null
@@ -155,11 +156,12 @@ export async function availableSlot(db:D1Database,config:Shop,fulfillment:'picku
 }
 
 export type Fulfillment='delivery'|'pickup'
-export const onlineOrderingAvailable=(config:Pick<Shop,'accepting'|'enable_delivery'|'enable_pickup'>)=>Boolean(config.accepting&&(config.enable_delivery||config.enable_pickup))
+export const onlineOrderingAvailable=(config:Pick<Shop,'accepting'|'enable_delivery'|'enable_pickup'|'enable_cod'|'enable_online'>)=>
+  Boolean(config.accepting&&(config.enable_delivery||config.enable_pickup)&&(config.enable_cod||config.enable_online))
 export const fulfillmentEnabled=(config:Pick<Shop,'enable_delivery'|'enable_pickup'>,mode:Fulfillment)=>Boolean(mode==='delivery'?config.enable_delivery:config.enable_pickup)
 
 export async function slots(db:D1Database,config:Shop, fulfillment:Fulfillment, time=now()) {
-  if (!config.accepting||!fulfillmentEnabled(config,fulfillment)) return []
+  if (!onlineOrderingAvailable(config)||!fulfillmentEnabled(config,fulfillment)) return []
   const day=shopDayStart(time)
   const result: { start:number; end:number; remaining:number }[]=[]
   const usage = await all<{slot_start:number;slot_end:number;used:number}>(db,`SELECT slot_start,slot_end,COUNT(*) used FROM orders

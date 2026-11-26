@@ -5,7 +5,7 @@ import type { Ctx, Env, Product } from './shared'
 
 export const catalog=new Hono<Env>()
 const terms=(value:string)=>[...new Set(value.toLowerCase().normalize('NFKC').match(/[\p{L}\p{N}]+/gu)||[])]
-const publicFields='id,sku,name,brand,description,category,subcategory,unit,step,price,mrp,stock,min_steps,max_steps,image,featured'
+const publicFields='id,sku,name,brand,description,category,subcategory,unit,step,price,mrp,stock,min_steps,max_steps,image,featured,variant_group'
 async function searchCatalog(db:D1Database,words:string[],cursor:string){
   const aliases=await all<{term:string;canonical:string}>(db,`SELECT term,canonical FROM synonyms WHERE term IN (${words.map(()=>'?').join(',')})`,...words)
   const canonical=new Map(aliases.map(row=>[row.term,row.canonical]))
@@ -54,8 +54,14 @@ catalog.get('/catalog',async c=>{
   return c.json({products:products.slice(0,amount),next:products.length>amount?products[amount-1].id:null})
 })
 catalog.get('/catalog/:id',async c=>{
-  const product=await one<Product>(c.env.DB,`SELECT ${publicFields} FROM products WHERE id=? AND active=1 AND (expiry IS NULL OR expiry>=date('now','+330 minutes'))`,c.req.param('id'))
+  const db=c.env.DB, product=await one<Product>(db,`SELECT ${publicFields} FROM products WHERE id=? AND active=1 AND (expiry IS NULL OR expiry>=date('now','+330 minutes'))`,c.req.param('id'))
   if(!product) throw new Problem(404,'Product not found.')
+  if(c.req.query('variants')==='1'){
+    const variants=product.variant_group?await all<Product>(db,`SELECT ${publicFields} FROM products
+      WHERE variant_group=? AND variant_group<>'' AND active=1 AND (expiry IS NULL OR expiry>=date('now','+330 minutes'))
+      ORDER BY step,id LIMIT 24`,product.variant_group):[]
+    return c.json({product,variants})
+  }
   return c.json(product)
 })
 catalog.get('/admin/products',async c=>{
@@ -76,7 +82,17 @@ catalog.get('/admin/products',async c=>{
 })
 catalog.get('/admin/products/:id/stock',async c=>{
   role(c,'owner','staff')
-  return c.json(await all(c.env.DB,'SELECT id,quantity,reason,order_id,created_at FROM stock_events WHERE product_id=? ORDER BY id DESC LIMIT 50',c.req.param('id')))
+  const db=c.env.DB,productId=c.req.param('id')
+  const events='SELECT id,quantity,reason,order_id,created_at FROM stock_events WHERE product_id=? ORDER BY id DESC LIMIT 50'
+  if(c.req.query('summary')!=='1')return c.json(await all(db,events,productId))
+  const result=await one<{available:number;reserved:number;events:string}>(db,`SELECT p.stock AS available,
+    (SELECT COALESCE(SUM(i.quantity),0) FROM orders o JOIN order_items i ON i.order_id=o.id AND i.product_id=p.id
+      WHERE o.stocked=1 AND o.status IN ('awaiting_payment','placed','accepted','packing','ready','out_for_delivery')) AS reserved,
+    (SELECT json_group_array(json_object('id',id,'quantity',quantity,'reason',reason,'order_id',order_id,'created_at',created_at))
+      FROM (${events})) AS events
+    FROM products p WHERE p.id=?`,productId,productId)
+  if(!result)throw new Problem(404,'Product not found.')
+  return c.json({...result,events:JSON.parse(result.events)})
 })
 catalog.post('/admin/products/:id/stock',async c=>{
   const actor=role(c,'owner','staff'), db=c.env.DB, data=await json(c)
@@ -106,15 +122,16 @@ function productFields(raw:Record<string,unknown>) {
   if(hsn&&!/^\d{4,8}$/.test(hsn)) throw new Problem(400,'HSN must be 4–8 digits.')
   const expiry=raw.expiry?S(raw.expiry,'expiry date',10):null
   if(expiry&&!/^\d{4}-\d{2}-\d{2}$/.test(expiry)) throw new Problem(400,'Invalid date.')
-  return { values:[sku,name,brand,description,category,subcategory,unit,step,price,mrp,threshold,min,max,tax,hsn,I(raw.active??1,0,1,'active'),I(raw.featured??0,0,1,'featured'),expiry,now()], search:terms([sku,name,brand,subcategory].join(' ')).slice(0,35) }
+  const variant=raw.variant_group===undefined?null:S(raw.variant_group,'variant group',60,false).normalize('NFKC').toLowerCase()
+  return { values:[sku,name,brand,description,category,subcategory,unit,step,price,mrp,threshold,min,max,tax,hsn,I(raw.active??1,0,1,'active'),I(raw.featured??0,0,1,'featured'),expiry,now()], variant,search:terms([sku,name,brand,subcategory].join(' ')).slice(0,35) }
 }
 const keys='sku,name,brand,description,category,subcategory,unit,step,price,mrp,threshold,min_steps,max_steps,tax_bps,hsn,active,featured,expiry,updated_at'.split(',')
 function writeProduct(db:D1Database,raw:Record<string,unknown>,actor:string,productId:string,update:boolean) {
   const p=productFields(raw)
   const count=update?0:I(raw.stock??0,0,100000000,'opening stock')
   const operations=[
-    update?statement(db,`UPDATE products SET ${keys.map(k=>k+'=?').join(',')} WHERE id=?`,...p.values,productId)
-      :statement(db,`INSERT INTO products(id,stock,${keys.join(',')}) VALUES(?,0,${keys.map(()=>'?').join(',')})`,productId,...p.values),
+    update?statement(db,`UPDATE products SET ${keys.map(k=>k+'=?').join(',')}${p.variant===null?'':',variant_group=?'} WHERE id=?`,...p.values,...(p.variant===null?[]:[p.variant]),productId)
+      :statement(db,`INSERT INTO products(id,stock,${keys.join(',')},variant_group) VALUES(?,0,${keys.map(()=>'?').join(',')},?)`,productId,...p.values,p.variant??''),
     statement(db,'DELETE FROM search_prefixes WHERE product_id=?',productId),
     statement(db,'DELETE FROM search_terms WHERE product_id=?',productId),
     statement(db,`INSERT OR IGNORE INTO search_terms(term,product_id) VALUES ${p.search.map(()=>'(?,?)').join(',')}`,...p.search.flatMap(term=>[term,productId])),

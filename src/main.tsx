@@ -18,25 +18,35 @@ function readCart(key:string):CartLine[]|null{
     return raw&&Date.now()-raw.saved<172800000&&Array.isArray(raw.lines)?raw.lines:null
   }catch{return null}
 }
-async function loadBasket(actor:Account|null,afterSignIn=false,checkout=false){
-  if(actor?.role!=='customer')return {lines:readCart(cartKey())??[],changed:false}
+function saveBasket(key:string,lines:CartLine[]){
+  try{localStorage.setItem(key,JSON.stringify({lines,saved:Date.now()}));return true}
+  catch{return false}
+}
+async function loadBasket(actor:Account|null,afterSignIn=false){
+  if(actor?.role!=='customer')return {lines:readCart(cartKey())??[],changed:false,remainder:[]}
   const cached=readCart(cartKey(actor.id))
   const saved=cached?null:await api<{lines:CartLine[]}>('/cart').catch(()=>null)
   const existing=cached??saved?.lines??[]
-  if(!afterSignIn||existing.length&&!checkout)return {lines:existing,changed:false}
+  if(!afterSignIn)return {lines:existing,changed:false,remainder:[]}
   const guest=readCart(cartKey())??[]
-  if(!guest.length)return {lines:existing,changed:false}
+  if(!guest.length)return {lines:existing,changed:false,remainder:[]}
   const combined=new Map(existing.map(line=>[line.product.id,line]))
+  const remainder:CartLine[]=[]
+  let changed=false
   for(const line of guest){
-    const product=line.product,prior=combined.get(product.id)
-    if(!prior&&combined.size>=40)continue
+    const prior=combined.get(line.product.id),product=prior?.product??line.product
+    const before=prior?.steps??0
     const max=Math.min(product.max_steps,Math.floor(product.stock/product.step))
-    const steps=Math.min(max,(prior?.steps??0)+line.steps)
-    if(steps>=product.min_steps)combined.set(product.id,{product,steps})
+    const added=!prior&&combined.size>=40?0:Math.max(0,Math.min(line.steps,max-before))
+    if(!added||before+added<product.min_steps){remainder.push(line);continue}
+    combined.set(product.id,{product,steps:before+added})
+    if(added<line.steps)remainder.push({...line,steps:line.steps-added})
+    changed=true
   }
-  return {lines:[...combined.values()],changed:true}
+  return {lines:[...combined.values()],changed,remainder}
 }
-function clearGuestBasket(){
+function saveGuestRemainder(lines:CartLine[]){
+  if(lines.length){saveBasket(cartKey(),lines);return}
   try{localStorage.removeItem(cartKey())}catch{/* Storage access can be disabled by the browser. */}
 }
 type Modal='signin'|'profile'|'orders'|'location'|'notices'|null
@@ -58,7 +68,7 @@ function App(){
       const url=new URL(window.location.href)
       const checkout=url.searchParams.get('checkout')==='resume'&&me.account?.role==='customer'
       const signedIn=checkout||url.searchParams.get('signin')==='complete'
-      const basket=await loadBasket(me.account,signedIn,checkout)
+      const basket=await loadBasket(me.account,signedIn)
       const orderId=url.searchParams.get('order')
       if(signedIn||orderId){
         for(const key of ['checkout','signin','order'])url.searchParams.delete(key)
@@ -66,7 +76,7 @@ function App(){
       }
       if(orderId&&me.account?.role==='customer'&&/^[0-9a-f-]{36}$/.test(orderId))setOrder(orderId)
       cartChanged.current=basket.changed
-      if(basket.changed)clearGuestBasket()
+      if(basket.changed&&me.account&&saveBasket(cartKey(me.account.id),basket.lines))saveGuestRemainder(basket.remainder)
       setAccount(me.account);setCart(basket.lines);setReady(true)
       if(checkout&&basket.lines.length){setResumeCheckout(true);openCart(true)}
     },e=>{setError(message(e));setReady(true)})
@@ -77,7 +87,7 @@ function App(){
   useEffect(()=>{
     if(!ready)return
     const key=cartKey(account?.role==='customer'?account.id:undefined)
-    try{localStorage.setItem(key,JSON.stringify({lines:cart,saved:Date.now()}))}catch{/* Keep the working basket available in memory. */}
+    saveBasket(key,cart)
     if(account?.role!=='customer'||!cartChanged.current)return
     const t=setTimeout(()=>{
       cartChanged.current=false
@@ -93,10 +103,10 @@ function App(){
   }
   const signIn=(role:'customer'|'owner'|'rider')=>{setLoginRole(role);setModal('signin')}
   async function signed(actor:Account){
-    const basket=await loadBasket(actor,true,checkoutIntent.current)
+    const basket=await loadBasket(actor,true)
     cartChanged.current=basket.changed
     setCart(basket.lines)
-    if(basket.changed)clearGuestBasket()
+    if(basket.changed&&saveBasket(cartKey(actor.id),basket.lines))saveGuestRemainder(basket.remainder)
     setAccount(actor);setModal(null)
     if(actor.role==='owner'||actor.role==='staff')go('owner')
     if(actor.role==='rider')go('rider')

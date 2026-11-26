@@ -24,8 +24,8 @@ async function quote(c:Ctx, data:Record<string,unknown>, pos:boolean, placing=fa
   if ((fulfillment==='delivery'||fulfillment==='pickup')&&!fulfillmentEnabled(config,fulfillment)){
     throw new Problem(409,fulfillment==='delivery'?'Home delivery is temporarily unavailable.':'Store pickup is temporarily unavailable.','fulfillment_unavailable')
   }
-  if (!pos && (method==='online'?!config.enable_online:!config.enable_cod)) throw new Problem(409,'That payment method is unavailable.')
-  if (!pos && method==='online' && !localhost(c) && !checkoutCredentials(c.env)) throw new Problem(503,'Online payment provider has not been configured.')
+  if (!pos && (method==='online'?!config.enable_online:!config.enable_cod)) throw new Problem(409,'That payment method is unavailable.','payment_unavailable')
+  if (!pos && method==='online' && !localhost(c) && !checkoutCredentials(c.env)) throw new Problem(503,'Online payment provider has not been configured.','payment_unavailable')
   const products=await all<Product>(db,`SELECT id,sku,name,unit,step,price,stock,min_steps,max_steps,tax_bps,hsn FROM products WHERE id IN (${input.map(()=>'?').join(',')}) AND active=1 AND (expiry IS NULL OR expiry>=date('now','+330 minutes'))`, ...input.map(i=>i.id))
   const byId=new Map(products.map(p=>[p.id,p]))
   const items=input.map(({id,steps})=>{
@@ -108,7 +108,9 @@ orders.get('/slots',async c=>{
   const key=c.req.query('mode')
   if(key!=='pickup'&&key!=='delivery') throw new Problem(400,'Select delivery or store pickup.')
   if(!checkoutAccess(c))return c.json([])
-  return c.json(await slots(c.env.DB,await shop(c.env.DB),key))
+  const config=await shop(c.env.DB)
+  if(!config.enable_cod&&!localhost(c)&&!checkoutCredentials(c.env))return c.json([])
+  return c.json(await slots(c.env.DB,config,key))
 })
 orders.get('/orders',async c=>{
   const account=role(c,'customer','owner','staff','rider')
@@ -151,7 +153,7 @@ orders.get('/orders/:id',async c=>{
   const liveRefunds=account.role==='owner'&&c.env.RAZORPAY_LIVE_REFUNDS==='enabled'
     ?pendingRefunds.filter(r=>r.mode==='live'&&!r.failed_at).map(({id,amount,status})=>({id,amount,status})):undefined
   const sanitized=Object.fromEntries(publicOrderFields.split(',').map(k=>[k,row[k as keyof Order]]))
-  return c.json({...sanitized,address:canAccessContact&&row.address_json?JSON.parse(row.address_json):null,invoice:account.role==='rider'?null:JSON.parse(row.billing_json),assigned_to:row.assigned_to,items,events,cases,refunds,refundPending:Boolean(pendingRefunds.length),refundFailed:pendingRefunds.some(r=>Boolean(r.failed_at)),paymentFailed:Boolean(paymentAttempt?.failed_at),canReconcilePayment:account.role==='owner'&&Boolean(paymentAttempt?.provider_order_id),liveRefunds})
+  return c.json({...sanitized,address:canAccessContact&&row.address_json?JSON.parse(row.address_json):null,invoice:account.role==='rider'?null:JSON.parse(row.billing_json),assigned_to:row.assigned_to,items,events,cases,refunds,refundPending:Boolean(pendingRefunds.length),refundFailed:pendingRefunds.some(r=>Boolean(r.failed_at)),paymentFailed:Boolean(paymentAttempt?.failed_at),canReconcilePayment:Boolean(paymentAttempt?.provider_order_id),liveRefunds})
 })
 
 const ownerTransitions: Record<string,string[]> = {
