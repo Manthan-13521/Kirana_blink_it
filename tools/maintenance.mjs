@@ -1,7 +1,8 @@
-import { closeSync,existsSync,mkdirSync,openSync,readFileSync,rmSync,writeFileSync } from 'node:fs'
+import { closeSync,existsSync,mkdirSync,openSync,readFileSync,writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { join,resolve } from 'node:path'
 import assert from 'node:assert/strict'
+import { DatabaseSync } from 'node:sqlite'
 
 const [storePath,workerPath,backupDir]=process.argv.slice(2)
 assert.ok(storePath&&workerPath&&backupDir,
@@ -14,8 +15,10 @@ for(const [name,id] of [['DB',config.databaseId],['MEDIA',config.mediaDatabaseId
 }
 const root=resolve(backupDir)
 mkdirSync(root,{recursive:true,mode:0o700})
-const lock=join(root,'.maintenance.lock')
-const fd=openSync(lock,'wx',0o600)
+assert.ok(!existsSync(join(root,'.maintenance.lock')),'Check for a running legacy maintenance job before clearing its lock.')
+const path=join(root,'.maintenance.sqlite')
+closeSync(openSync(path,'a',0o600))
+const lock=new DatabaseSync(path)
 const passphrase=readFileSync(0)
 const stamp=new Date().toISOString().slice(0,10)
 function once(name,script,args,input){
@@ -28,10 +31,11 @@ function once(name,script,args,input){
   console.log(name+' completed.')
 }
 try{
+  // SQLite releases the lease when an interrupted runner exits. Keep this directory on local disk.
+  lock.exec('PRAGMA busy_timeout=0; BEGIN IMMEDIATE')
   once('backup','tools/backup-d1.mjs',['backup',workerPath,backupDir],passphrase)
   once('static-images','tools/publish-media-static.mjs',[storePath,workerPath])
 }finally{
   passphrase.fill(0)
-  closeSync(fd)
-  rmSync(lock,{force:true})
+  lock.close()
 }

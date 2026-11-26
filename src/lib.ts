@@ -13,7 +13,7 @@ export type OrderItem={product_id:string;sku:string;name:string;unit:string;quan
 export type OrderCase={id:string;kind:string;status:string;reason:string;response:string;created_at:number;order_id:string;total:number;payment_status:string}
 export type OrderDetail=OrderRow&{
   address:Address|null;invoice:{name:string;address:string;phone:string;gstin:string;registered:number;buyer:string}|null
-  items:OrderItem[];events:{status:string;created_at:number;note:string}[];cases:OrderCase[];refunds:{amount:number;created_at:number}[]
+  items:OrderItem[];events:{status:string;created_at:number;note:string}[];cases:OrderCase[];refunds:{amount:number;created_at:number}[];refundPending?:boolean
 }
 export class ApiError extends Error { constructor(public status:number,message:string,public code?:string){super(message)} }
 export async function api<T>(path:string,options?:RequestInit):Promise<T>{

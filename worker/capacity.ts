@@ -21,6 +21,8 @@ capacity.get('/admin/capacity',async c=>{
     measure('Stored image versions',media?.files??null,6500),
     measure('Image uploads today',media?.uploads??null,300),
     measure('Routing credits today',used('routing'),routingCreditCap),
+    measure('Google sign-in attempts today',used('google-oauth'),2000),
+    measure('Razorpay test link attempts today',used('razorpay-link'),30),
     measure('Push deliveries attempted today',used('web-push'),pushDailyCap),
   ]})
 })

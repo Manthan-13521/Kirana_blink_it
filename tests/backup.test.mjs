@@ -59,6 +59,16 @@ test('settled archive and authenticated database recovery preserve financial rec
       assert.equal(recovered.prepare('SELECT SUM(total) total FROM orders').get().total,5520000)
       assert.equal(recovered.prepare('SELECT SUM(amount) total FROM refunds').get().total,5000)
     } finally {recovered.close()}
+    const encryptedArchive=path('archive.enc'),invoice=path('invoice.json')
+    assert.equal(backup('encrypt',archive,encryptedArchive).status,0)
+    const exported=command('tools/backup-d1.mjs',['invoice',encryptedArchive,invoice,'order-0'])
+    assert.equal(exported.status,0,exported.stderr)
+    const receipt=JSON.parse(readFileSync(invoice,'utf8'))
+    assert.equal(receipt.order.total,5000)
+    assert.equal(receipt.order.payment_status,'refunded')
+    assert.equal(receipt.refunds[0].amount,5000)
+    assert.notEqual(command('tools/backup-d1.mjs',['invoice',encryptedArchive,invoice,'order-0']).status,0)
+    assert.notEqual(command('tools/backup-d1.mjs',['invoice',encryptedArchive,path('invalid-invoice.json'),'unresolved']).status,0)
     const bytes=readFileSync(encrypted);bytes[40]^=1
     writeFileSync(path('tampered.enc'),bytes)
     assert.notEqual(backup('decrypt',path('tampered.enc'),path('tampered.sqlite')).status,0)

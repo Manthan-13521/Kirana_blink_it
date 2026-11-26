@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { createHmac,generateKeyPairSync,verify } from 'node:crypto'
+import { createHmac,generateKeyPairSync,sign,verify } from 'node:crypto'
 import { readFile,readdir } from 'node:fs/promises'
 import { DatabaseSync } from 'node:sqlite'
 import { registerHooks } from 'node:module'
@@ -107,4 +107,120 @@ test('the D1 insert guard rejects an unavailable fulfillment method even with th
     assert.throws(()=>insert.run('closed','closed','pickup',2),/store_paused/)
     assert.equal(sqlite.prepare('SELECT count(*) count FROM orders').get().count,1)
   }finally{sqlite.close()}
+})
+
+async function integrationFixture(t){
+  const sqlite=new DatabaseSync(':memory:')
+  t.after(()=>sqlite.close())
+  const directory=new URL('../migrations/',import.meta.url)
+  for(const file of (await readdir(directory)).filter(name=>name.endsWith('.sql')).sort()){
+    sqlite.exec(await readFile(new URL(file,directory),'utf8'))
+  }
+  const bind=(sql,params)=>({
+    first:async()=>sqlite.prepare(sql).get(...params)??null,
+    run:async()=>({meta:{changes:Number(sqlite.prepare(sql).run(...params).changes)}}),
+  })
+  const db={prepare:sql=>({...bind(sql,[]),bind:(...params)=>bind(sql,params)}),batch:async commands=>{
+    sqlite.exec('BEGIN')
+    try{
+      const result=[]
+      for(const command of commands)result.push(await command.run())
+      sqlite.exec('COMMIT')
+      return result
+    }catch(error){sqlite.exec('ROLLBACK');throw error}
+  }}
+  return {sqlite,db}
+}
+
+test('Google ID tokens are bound to the configured client and one-time nonce',async()=>{
+  const {verifyGoogleIdentity}=await import('../worker/google-auth.ts')
+  const {privateKey,publicKey}=generateKeyPairSync('rsa',{modulusLength:2048})
+  const now=1800000000,nonce='state-for-this-browser',client='web-client'
+  const claims={iss:'https://accounts.google.com',aud:client,sub:'stable-user-321',email:'owner@gmail.com',
+    email_verified:true,nonce,iat:now-2,exp:now+300}
+  const encode=value=>Buffer.from(JSON.stringify(value)).toString('base64url')
+  const jwt=(changes={})=>{
+    const payload=encode({alg:'RS256',kid:'test-key'})+'.'+encode({...claims,...changes})
+    return payload+'.'+sign('RSA-SHA256',Buffer.from(payload),privateKey).toString('base64url')
+  }
+  const key=async kid=>kid==='test-key'?publicKey.export({format:'jwk'}):null
+  assert.equal((await verifyGoogleIdentity(jwt(),client,nonce,key,now)).sub,claims.sub)
+  for(const change of [{nonce:'different'},{aud:'unexpected'},{exp:now},{email_verified:false},{iss:'https://invalid.test'}]){
+    await assert.rejects(verifyGoogleIdentity(jwt(change),client,nonce,key,now),/could not be verified/)
+  }
+  const unsigned=jwt().split('.')
+  unsigned[1]=encode({...claims,email:'different@gmail.com'})
+  await assert.rejects(verifyGoogleIdentity(unsigned.join('.'),client,nonce,key,now),/could not be verified/)
+})
+
+test('Google workspaces enforce email-bound team invitations, single rider and revocation',async t=>{
+  const {resolveGoogleAccount}=await import('../worker/google-auth.ts')
+  const {digest}=await import('../worker/shared.ts')
+  const {sqlite,db}=await integrationFixture(t)
+  const email='team@gmail.com',profile={sub:'stable-subject',email,email_verified:true}
+  const env={DB:db,GOOGLE_OWNER_EMAILS:'approved@gmail.com'}
+  const expires=Math.floor(Date.now()/1000)+900
+  const invite=async (hash,role)=>sqlite.prepare('INSERT INTO invites(hash,role,expires_at,target_email_hash) VALUES(?,?,?,?)')
+    .run(hash,role,expires,await digest(email))
+  const shopper=await resolveGoogleAccount(env,profile,'shop',null)
+  assert.equal(await resolveGoogleAccount(env,profile,'shop',null),shopper)
+  await assert.rejects(resolveGoogleAccount(env,profile,'owner',null),/not authorized/)
+  await assert.rejects(resolveGoogleAccount(env,{...profile,email:'approved@gmail.com.invalid'},'owner',null),/not authorized/)
+  await invite('fixture-staff','staff')
+  await assert.rejects(resolveGoogleAccount(env,{...profile,email:'different@gmail.com'},'owner','fixture-staff'),/different Google account/)
+  const staff=await resolveGoogleAccount(env,profile,'owner','fixture-staff')
+  assert.notEqual(staff,shopper)
+  assert.equal(sqlite.prepare('SELECT role FROM accounts WHERE id=?').get(staff).role,'staff')
+  await assert.rejects(resolveGoogleAccount(env,{...profile,sub:'other-subject'},'owner','fixture-staff'),/expired/)
+  sqlite.prepare('UPDATE accounts SET active=0 WHERE id=?').run(staff)
+  await assert.rejects(resolveGoogleAccount(env,profile,'owner',null),/not authorized/)
+  await invite('replacement','staff')
+  assert.notEqual(await resolveGoogleAccount(env,profile,'owner','replacement'),staff)
+  await invite('fixture-rider','rider')
+  await assert.rejects(resolveGoogleAccount(env,profile,'rider','fixture-rider'),/no longer available/)
+  sqlite.exec("UPDATE accounts SET active=0 WHERE role='rider'")
+  assert.ok(await resolveGoogleAccount(env,profile,'rider','fixture-rider'))
+})
+
+test('Razorpay only settles matching captures and atomically queues late or owner refunds',async t=>{
+  const {applyOrderPaymentEvent,queueOrderRefund}=await import('../worker/checkout-payments.ts')
+  const {sqlite,db}=await integrationFixture(t)
+  const timely='11111111-1111-4111-8111-111111111111',late='22222222-2222-4222-8222-222222222222',time=1800000000
+  for(const [id,link] of [[timely,'plink_timely123'],[late,'plink_late123']]){
+    sqlite.prepare(`INSERT INTO orders(id,account_id,request_key,request_fingerprint,channel,fulfillment,status,payment_method,payment_status,
+      subtotal,fees,total,tax,slot_start,slot_end,billing_json,created_at,updated_at)
+      VALUES(?,'demo-customer',?,'test','online','pickup','awaiting_payment','online','unpaid',4300,0,4300,0,?,?, '{}',?,?)`)
+      .run(id,id,time+900,time+3600,time-500,time-500)
+    sqlite.prepare('INSERT INTO order_payment_links(order_id,link_id,expires_at) VALUES(?,?,?)').run(id,link,time+400)
+  }
+  const row=id=>sqlite.prepare('SELECT * FROM orders WHERE id=?').get(id)
+  const pending=id=>sqlite.prepare("SELECT COUNT(*) as n FROM order_provider_refunds WHERE order_id=? AND status<>'processed'").get(id).n
+  const capture=(id,link,payment,amount)=>({event:'payment_link.paid',payload:{
+    payment_link:{entity:{id:link,reference_id:id,amount,amount_paid:amount,currency:'INR'}},
+    payment:{entity:{id:payment,amount,currency:'INR',status:'captured'}},
+  }})
+  await applyOrderPaymentEvent(db,capture(timely,'plink_timely123','pay_timely123',4200),time)
+  assert.equal(row(timely).status,'awaiting_payment')
+  await applyOrderPaymentEvent(db,capture(timely,'plink_timely123','pay_timely123',4300),time)
+  await applyOrderPaymentEvent(db,capture(timely,'plink_timely123','pay_replay123',4300),time)
+  assert.equal(row(timely).status,'placed')
+  assert.equal(sqlite.prepare('SELECT payment_id FROM order_payment_links WHERE order_id=?').get(timely).payment_id,'pay_timely123')
+  assert.equal(row(timely).stocked,1)
+  await queueOrderRefund(db,row(timely),'demo-owner',{caseId:null,amount:4300,cancel:'cancelled',response:'Cancelled by owner'})
+  assert.equal(pending(timely),1)
+  assert.equal(row(timely).stocked,0)
+  await assert.rejects(queueOrderRefund(db,row(timely),'demo-owner',{caseId:null,amount:4300,cancel:'cancelled'}),/changed/)
+  const refund=(id,key,payment,amount)=>({event:'refund.processed',payload:{
+    refund:{entity:{id,amount,payment_id:payment,notes:{kirana_refund:key}}},
+  }})
+  await applyOrderPaymentEvent(db,refund('rfnd_cancel123','cancel-'+timely,'pay_timely123',4200),time)
+  assert.equal(row(timely).payment_status,'paid')
+  await applyOrderPaymentEvent(db,refund('rfnd_cancel123','cancel-'+timely,'pay_timely123',4300),time)
+  await applyOrderPaymentEvent(db,refund('rfnd_cancel123','cancel-'+timely,'pay_timely123',4300),time)
+  assert.equal(row(timely).payment_status,'refunded')
+  assert.equal(sqlite.prepare('SELECT COUNT(*) as n FROM refunds WHERE order_id=?').get(timely).n,1)
+  await applyOrderPaymentEvent(db,capture(late,'plink_late123','pay_late123',4300),time+401)
+  assert.equal(row(late).status,'cancelled')
+  assert.equal(row(late).slot_retained,0)
+  assert.equal(pending(late),1)
 })

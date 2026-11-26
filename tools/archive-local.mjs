@@ -13,6 +13,7 @@ const db=new DatabaseSync(source,{readOnly:true})
 const temporary=destination+'.'+randomUUID()+'.tmp'
 let file
 try {
+  const provider=Boolean(db.prepare("SELECT 1 FROM sqlite_schema WHERE name='order_provider_refunds'").get())
   db.exec('CREATE TEMP TABLE selected(id TEXT PRIMARY KEY) WITHOUT ROWID; BEGIN')
   db.prepare(`INSERT INTO selected
     SELECT o.id FROM orders o WHERE o.updated_at<?
@@ -20,6 +21,7 @@ try {
       AND (o.payment_status IN('void','refunded') OR
         (o.payment_status IN('paid','cash_collected') AND o.reconciled=1))
       AND NOT EXISTS (SELECT 1 FROM cases c WHERE c.order_id=o.id AND c.status='open')
+      ${provider?"AND NOT EXISTS(SELECT 1 FROM order_provider_refunds r WHERE r.order_id=o.id AND r.status<>'processed')":''}
     ORDER BY o.updated_at,o.id LIMIT ?`).run(cutoff,limit)
   const count=db.prepare('SELECT COUNT(*) count FROM selected').get().count
   const digest=createHash('sha256')
@@ -30,7 +32,7 @@ try {
     digest.update(line)
   }
   record({format:'kirana-local-archive-v1',cutoff,orders:count})
-  for(const table of ['orders','order_items','order_events','stock_events','cases','refunds']){
+  for(const table of ['orders','order_items','order_events','stock_events','cases','refunds',...(provider?['order_payment_links','order_provider_refunds']:[])]){
     const key=table==='orders'?'id':'order_id'
     const rows=db.prepare(`SELECT data.* FROM ${table} AS data JOIN selected ON selected.id=data.${key}`).iterate()
     for(const row of rows)record({table,row})

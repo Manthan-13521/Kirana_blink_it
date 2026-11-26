@@ -1,5 +1,7 @@
 import { Hono } from 'hono'
+import { queueOrderRefund } from './checkout-payments'
 import { queuePush } from './push'
+import { testCredentials } from './payment-provider'
 import { all,audit,authorizeOrder,availableSlot,configuredSlot,digest,errorMap,fulfillmentEnabled,I,id,json,now,one,onlineOrderingAvailable,order,parseLines,Problem,publicOrderFields,role,S,services,shop,shopDayStart,slots,statement,localhost } from './shared'
 import type { Address, Ctx, Env, Order, Product } from './shared'
 
@@ -12,7 +14,7 @@ const calculatedTax = (total:number,bps:number)=>Math.round(total*bps/(10000+bps
 async function quote(c:Ctx, data:Record<string,unknown>, pos:boolean, placing=false) {
   const account=role(c,...(pos?['owner','staff'] as const:['customer'] as const))
   const db=c.env.DB
-  if(!pos&&c.env.APP_MODE==='staging') throw new Problem(503,'This storefront is a preview. Online orders are closed.')
+  if(!pos&&c.env.APP_MODE==='staging'&&!c.get('stagingCheckout')) throw new Problem(503,'This storefront is a preview. Online orders are closed.')
   const input=parseLines(data.items)
   const { fulfillment, method } = data
   if (pos?fulfillment!=='counter':(fulfillment!=='pickup'&&fulfillment!=='delivery')) throw new Problem(400,'Invalid fulfillment method.')
@@ -23,7 +25,7 @@ async function quote(c:Ctx, data:Record<string,unknown>, pos:boolean, placing=fa
     throw new Problem(409,fulfillment==='delivery'?'Home delivery is temporarily unavailable.':'Store pickup is temporarily unavailable.','fulfillment_unavailable')
   }
   if (!pos && (method==='online'?!config.enable_online:!config.enable_cod)) throw new Problem(409,'That payment method is unavailable.')
-  if (!pos && method==='online' && !localhost(c)) throw new Problem(503,'Online payment provider has not been configured.')
+  if (!pos && method==='online' && !localhost(c) && !testCredentials(c.env)) throw new Problem(503,'Online payment provider has not been configured.')
   const products=await all<Product>(db,`SELECT id,sku,name,unit,step,price,stock,min_steps,max_steps,tax_bps,hsn FROM products WHERE id IN (${input.map(()=>'?').join(',')}) AND active=1 AND (expiry IS NULL OR expiry>=date('now','+330 minutes'))`, ...input.map(i=>i.id))
   const byId=new Map(products.map(p=>[p.id,p]))
   const items=input.map(({id,steps})=>{
@@ -54,6 +56,7 @@ async function quote(c:Ctx, data:Record<string,unknown>, pos:boolean, placing=fa
   }
   const fees=fulfillment==='delivery'&&subtotal<config.free_delivery?config.delivery_fee:0
   const note=S(data.note??'','note',280,false)
+  if(method==='online'&&!localhost(c)&&subtotal+fees<100)throw new Problem(409,'Razorpay Test Mode requires a total of at least ₹1.')
   const version=await digest(JSON.stringify({revision:config.revision,items:items.map(i=>[i.id,i.quantity,i.item.price,i.tax]),subtotal,fees,tax,fulfillment,method,address,slot:slot?.start,note}))
   return {config,items,subtotal,tax,fees,total:subtotal+fees,address,slot,fulfillment,method,note,version,account}
 }
@@ -104,7 +107,7 @@ orders.post('/pos', c=>create(c,true))
 orders.get('/slots',async c=>{
   const key=c.req.query('mode')
   if(key!=='pickup'&&key!=='delivery') throw new Problem(400,'Select delivery or store pickup.')
-  if(c.env.APP_MODE==='staging')return c.json([])
+  if(c.env.APP_MODE==='staging'&&!c.get('stagingCheckout'))return c.json([])
   return c.json(await slots(c.env.DB,await shop(c.env.DB),key))
 })
 orders.get('/orders',async c=>{
@@ -134,14 +137,16 @@ orders.get('/orders/:id',async c=>{
   const account=role(c,'customer','owner','staff','rider'), db=c.env.DB
   const row=await order(db,c.req.param('id'));authorizeOrder(account,row)
   const canAccessContact=account.role!=='rider'||!terminal.has(row.status)
-  const [items,events,cases,refunds]=await Promise.all([
+  const [items,events,cases,refunds,pendingRefund]=await Promise.all([
     all(db,'SELECT * FROM order_items WHERE order_id=? ORDER BY product_id',row.id),
     all(db,'SELECT status,note,created_at FROM order_events WHERE order_id=? ORDER BY id',row.id),
     account.role==='rider'?[]:all(db,'SELECT id,kind,reason,response,status,created_at FROM cases WHERE order_id=? ORDER BY created_at DESC',row.id),
     account.role==='rider'?[]:all(db,'SELECT amount,created_at FROM refunds WHERE order_id=? ORDER BY created_at DESC',row.id),
+    account.role!=='rider'&&c.env.APP_MODE==='staging'&&row.payment_method==='online'&&row.payment_status==='paid'
+      ?one(db,"SELECT 1 FROM order_provider_refunds WHERE order_id=? AND status<>'processed' LIMIT 1",row.id):null,
   ])
   const sanitized=Object.fromEntries(publicOrderFields.split(',').map(k=>[k,row[k as keyof Order]]))
-  return c.json({...sanitized,address:canAccessContact&&row.address_json?JSON.parse(row.address_json):null,invoice:account.role==='rider'?null:JSON.parse(row.billing_json),assigned_to:row.assigned_to,items,events,cases,refunds})
+  return c.json({...sanitized,address:canAccessContact&&row.address_json?JSON.parse(row.address_json):null,invoice:account.role==='rider'?null:JSON.parse(row.billing_json),assigned_to:row.assigned_to,items,events,cases,refunds,refundPending:Boolean(pendingRefund)})
 })
 
 const ownerTransitions: Record<string,string[]> = {
@@ -162,8 +167,13 @@ orders.post('/orders/:id/state',async c=>{
   if(closeCash&&I(data.cash,0,100000000,'cash collected')!==row.total) throw new Problem(409,'Recorded cash must match the order total.')
   if(next==='failed'&&!S(data.reason??'','failure note',280,false)) throw new Problem(400,'Provide a delivery failure reason.')
   const dismiss=release.has(next)
-  if(dismiss&&row.payment_status==='paid'&&!localhost(c)) throw new Problem(503,'Refund provider is not configured.')
   const reason=S(data.reason??'','reason',280,false)
+  if(dismiss&&row.payment_status==='paid'&&!localhost(c)){
+    if(!testCredentials(c.env))throw new Problem(503,'Refund provider is not configured.')
+    await queueOrderRefund(db,row,account.id,{caseId:null,amount:row.total,cancel:next==='rejected'?'rejected':'cancelled',response:reason})
+    queuePush(c,row.account_id,next)
+    return c.json({ok:true,refund:'pending'})
+  }
   const payment=closeCash?'cash_collected':dismiss&&row.payment_status!=='paid'?'void':row.payment_status
   const paymentChanged=payment!==row.payment_status
   const update=statement(db,`UPDATE orders SET status=?,updated_at=?
@@ -248,7 +258,12 @@ orders.post('/admin/cases/:id',async c=>{
   if(current.kind==='cancel'&&status==='approved'){
     if(amount) throw new Problem(400,'Cancellation calculates any refund automatically.')
     if(!['placed','accepted','packing','ready'].includes(row.status)) throw new Problem(409,'That order can no longer be cancelled.')
-    if(row.payment_status==='paid'&&!localhost(c)) throw new Problem(503,'Refund provider is not configured.')
+    if(row.payment_status==='paid'&&!localhost(c)){
+      if(!testCredentials(c.env))throw new Problem(503,'Refund provider is not configured.')
+      await queueOrderRefund(db,row,account.id,{caseId,amount:row.total,cancel:'cancelled',response})
+      queuePush(c,row.account_id,'cancelled')
+      return c.json({ok:true,refund:'pending'})
+    }
     const time=now()
     const result=await db.batch([
       statement(db,`UPDATE orders SET status='cancelled',stocked=0,slot_retained=0,updated_at=?,
@@ -268,7 +283,11 @@ orders.post('/admin/cases/:id',async c=>{
   if(amount&&row.fulfillment==='delivery'&&row.payment_method==='cash'&&!row.reconciled){
     throw new Problem(409,'Reconcile the rider cash collection before recording a refund.')
   }
-  if(amount&&row.payment_method==='online'&&!localhost(c)) throw new Problem(503,'Refund provider is not configured.')
+  if(amount&&row.payment_method==='online'&&!localhost(c)){
+    if(!testCredentials(c.env))throw new Problem(503,'Refund provider is not configured.')
+    await queueOrderRefund(db,row,account.id,{caseId,amount,response})
+    return c.json({ok:true,refund:'pending'})
+  }
   const time=now()
   const operations:D1PreparedStatement[]=[]
   if(amount) operations.push(statement(db,`INSERT INTO refunds(id,order_id,case_id,amount,actor,created_at)

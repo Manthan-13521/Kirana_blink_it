@@ -7,6 +7,8 @@ import { routing } from './routing'
 import { push } from './push'
 import { capacity } from './capacity'
 import { razorpay } from './razorpay'
+import { checkoutPayments,runPaymentMaintenance } from './checkout-payments'
+import { testCredentials } from './payment-provider'
 import { jpegMime,mediaFileId,webpMime } from './media-format'
 import { googleAuth } from './google-auth'
 import { all,audit,coordinate,digest,errorMap,I,id,json,localhost,now,one,onlineOrderingAvailable,parseLines,Problem,role,S,services,shop,statement,token } from './shared'
@@ -27,7 +29,7 @@ export function application(localRoutes?:Hono<Env>) {
   app.use('*',async(c,next)=>{
     await next()
     c.header('X-Content-Type-Options','nosniff')
-    c.header('Referrer-Policy',c.req.path.startsWith('/api/auth/google')?'no-referrer':'strict-origin-when-cross-origin')
+    c.header('Referrer-Policy',(c.req.path.startsWith('/api/auth/google')||c.req.path.startsWith('/api/payments/return/'))?'no-referrer':'strict-origin-when-cross-origin')
     c.header('X-Frame-Options','DENY')
   })
   api.use('*',bodyLimit({maxSize:96*1024,onError:c=>c.json({error:'Request is too large.'},413)}))
@@ -39,19 +41,27 @@ export function application(localRoutes?:Hono<Env>) {
       if(origin!==new URL(c.req.url).origin||c.req.header('sec-fetch-site')==='cross-site') throw new Problem(403,'Request origin is not permitted.')
     }
     const publicPath=/^\/api\/(store|categories|catalog(?:\/[^/]+)?|slots|health)$/.test(c.req.path)
-    const session=publicPath?undefined:getCookie(c,COOKIE)
+    const privateStore=c.env.APP_MODE==='staging'&&Boolean(c.env.STAGING_CHECKOUT_EMAILS)&&
+      (c.req.path==='/api/store'||c.req.path==='/api/slots')
+    const session=publicPath&&!privateStore?undefined:getCookie(c,COOKIE)
+    c.set('stagingCheckout',false)
     if(session&&/^[a-f0-9]{64}$/.test(session)){
-      const account=await one<Account>(c.env.DB,`SELECT accounts.id,role,name,phone FROM sessions JOIN accounts ON accounts.id=sessions.account_id WHERE hash=? AND expires_at>? AND active=1`,await digest(session),now())
-      if(account) c.set('account',account)
+      const account=await one<Account&{staging_checkout:string|null}>(c.env.DB,`SELECT accounts.id,role,name,phone,staging_checkout FROM sessions JOIN accounts ON accounts.id=sessions.account_id WHERE hash=? AND expires_at>? AND active=1`,await digest(session),now())
+      if(account){
+        const {staging_checkout,...actor}=account
+        c.set('account',actor)
+        c.set('stagingCheckout',c.env.APP_MODE==='staging'&&actor.role==='customer'&&Boolean(staging_checkout&&c.env.STAGING_CHECKOUT_EMAILS)&&
+          staging_checkout===await digest(c.env.STAGING_CHECKOUT_EMAILS??''))
+      }
     }
     await next()
   })
 
   api.get('/health',c=>c.json({ok:true,mode:localhost(c)?'local':'configured'}))
   api.get('/store',async c=>{
-    if(!localhost(c))c.header('Cache-Control','public, max-age=20')
+    if(!localhost(c)&&!(c.env.APP_MODE==='staging'&&c.env.STAGING_CHECKOUT_EMAILS))c.header('Cache-Control','public, max-age=20')
     const settings=await publicSettings(c.env.DB)
-    return c.json({settings:{...settings,accepting:Number(c.env.APP_MODE!=='staging'&&onlineOrderingAvailable(settings))},local:localhost(c)})
+    return c.json({settings:{...settings,enable_online:Number(settings.enable_online&&(localhost(c)||Boolean(testCredentials(c.env)))),accepting:Number((c.env.APP_MODE!=='staging'||c.get('stagingCheckout'))&&onlineOrderingAvailable(settings))},local:localhost(c)})
   })
   api.get('/me',c=>c.json({account:c.get('account')??null,local:localhost(c)}))
   api.post('/auth/logout',async c=>{
@@ -167,8 +177,10 @@ export function application(localRoutes?:Hono<Env>) {
     const choice=S(data.role,'role',12)
     if(!['staff','rider'].includes(choice)) throw new Problem(400,'Invalid invitation role.')
     if(choice==='rider'&&await one(db,"SELECT id FROM accounts WHERE role='rider' AND active=1")) throw new Problem(409,'Remove or deactivate the current partner before inviting another.')
+    const email=S(data.email??'','invitation email',254, !localhost(c)).toLowerCase()
+    if(email&&!/^\S+@\S+\.\S+$/.test(email))throw new Problem(400,'Enter the invited Google account email.')
     const code=token(),hash=await digest(code),time=now()
-    await db.batch([statement(db,'INSERT INTO invites(hash,role,expires_at) VALUES(?,?,?)',hash,choice,time+DAY),audit(db,actor.id,'team.invite',choice)])
+    await db.batch([statement(db,'INSERT INTO invites(hash,role,expires_at,target_email_hash) VALUES(?,?,?,?)',hash,choice,time+DAY,email?await digest(email):null),audit(db,actor.id,'team.invite',choice)])
     return c.json({code,expires_at:time+DAY},201)
   })
   api.post('/admin/team/:id/revoke',async c=>{
@@ -225,6 +237,7 @@ export function application(localRoutes?:Hono<Env>) {
   api.route('/',push)
   api.route('/',capacity)
   api.route('/',razorpay)
+  api.route('/',checkoutPayments)
   app.route('/api',api)
   app.get('/media/:id',async c=>{
     const file=c.req.param('id'),jpeg=file.endsWith('.jpg'),mime=jpeg?jpegMime:webpMime
@@ -250,7 +263,7 @@ export function application(localRoutes?:Hono<Env>) {
   app.notFound(c=>c.json({error:'Not found.'},404))
   return {
     fetch:app.fetch,
-    scheduled(_event:ScheduledController,env:Env['Bindings'],context:ExecutionContext){context.waitUntil(cleanup(env,Boolean(localRoutes)&&env.APP_MODE==='local'))},
+    scheduled(_event:ScheduledController,env:Env['Bindings'],context:ExecutionContext){context.waitUntil(Promise.all([cleanup(env,Boolean(localRoutes)&&env.APP_MODE==='local'),runPaymentMaintenance(env)]))},
   }
 }
 

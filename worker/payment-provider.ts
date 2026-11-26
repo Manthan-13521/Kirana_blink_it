@@ -1,0 +1,23 @@
+import type { Env } from './shared'
+type Credentials={key:string;secret:string;webhook:string}
+export function testCredentials(env:Env['Bindings']):Credentials|null{
+  const {APP_MODE,RAZORPAY_KEY_ID,RAZORPAY_KEY_SECRET,RAZORPAY_WEBHOOK_SECRET}=env
+  if(APP_MODE!=='staging'||!RAZORPAY_KEY_ID||!/^rzp_test_[A-Za-z0-9]+$/.test(RAZORPAY_KEY_ID)||!RAZORPAY_KEY_SECRET||!RAZORPAY_WEBHOOK_SECRET)return null
+  return {key:RAZORPAY_KEY_ID,secret:RAZORPAY_KEY_SECRET,webhook:RAZORPAY_WEBHOOK_SECRET}
+}
+export const identifier=(id:unknown,prefix:string):id is string=>typeof id==='string'&&new RegExp('^'+prefix+'_[A-Za-z0-9]{6,60}$').test(id)
+export const uuid=(id:unknown):id is string=>typeof id==='string'&&/^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(id)
+export async function validWebhook(body:ArrayBuffer,signature:string,secret:string){
+  if(!/^[a-f0-9]{64}$/i.test(signature))return false
+  const key=await crypto.subtle.importKey('raw',new TextEncoder().encode(secret),{name:'HMAC',hash:'SHA-256'},false,['verify'])
+  const bytes=Uint8Array.from(signature.match(/../g)!,hex=>parseInt(hex,16))
+  return crypto.subtle.verify('HMAC',key,bytes,body)
+}
+export function provider(credentials:Credentials,path:string,options:RequestInit={}){
+  return fetch('https://api.razorpay.com/v1'+path,{...options,redirect:'error',signal:AbortSignal.timeout(6500),
+    headers:{Authorization:'Basic '+btoa(credentials.key+':'+credentials.secret),'Content-Type':'application/json',...options.headers}})
+}
+export function safePaymentLink(url:unknown):url is string{
+  if(typeof url!=='string')return false
+  try{const path=new URL(url);return path.origin==='https://rzp.io'&&!path.username&&!path.password}catch{return false}
+}

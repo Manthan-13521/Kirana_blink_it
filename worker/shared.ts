@@ -6,11 +6,11 @@ export type Env = {
   Bindings: {
     DB: D1Database; MEDIA: D1Database; APP_MODE?: string; ASSETS?: Fetcher
     GOOGLE_CLIENT_ID?:string; GOOGLE_CLIENT_SECRET?:string; GOOGLE_ORIGIN?:string
-    GOOGLE_OWNER_EMAILS?:string; GOOGLE_RIDER_EMAIL?:string
+    GOOGLE_OWNER_EMAILS?:string; GOOGLE_RIDER_EMAIL?:string; STAGING_CHECKOUT_EMAILS?:string
     MEDIA_STATIC_ORIGIN?:string; GEOAPIFY_KEY?:string; VAPID_PUBLIC_KEY?:string; VAPID_PRIVATE_JWK?:string; VAPID_CONTACT?:string
     RAZORPAY_KEY_ID?:string; RAZORPAY_KEY_SECRET?:string; RAZORPAY_WEBHOOK_SECRET?:string
   }
-  Variables: { account: Account; localEntry: boolean }
+  Variables: { account: Account; localEntry: boolean; stagingCheckout:boolean }
 }
 export type Ctx = Context<Env>
 export type Shop = {

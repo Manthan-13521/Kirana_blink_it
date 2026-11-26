@@ -200,8 +200,8 @@ export function OrderList({open}:{open:(id:string)=>void}){
   </button>)}{next&&<button className="button secondary" disabled={loading} onClick={()=>void load(next)}>Load older orders</button>}</div>
 }
 
-type DetailProps={orderId:string;onClose:()=>void;account:Account;shop:Shop;extra?:(order:OrderDetail,refresh:()=>Promise<void>)=>ReactNode;reorder?:(items:OrderDetail['items'])=>Promise<void>}
-export function OrderView({orderId,onClose,account,shop,extra,reorder}:DetailProps){
+type DetailProps={orderId:string;onClose:()=>void;account:Account;shop:Shop;local?:boolean;extra?:(order:OrderDetail,refresh:()=>Promise<void>)=>ReactNode;reorder?:(items:OrderDetail['items'])=>Promise<void>}
+export function OrderView({orderId,onClose,account,shop,local=false,extra,reorder}:DetailProps){
   const [order,setOrder]=useState<OrderDetail|null>(null), [error,setError]=useState(''), [ok,setOk]=useState('')
   const [kind,setKind]=useState(''),[reason,setReason]=useState(''),[busy,setBusy]=useState(false)
   const refresh=async()=>{try{setOrder(await api<OrderDetail>('/orders/'+orderId))}catch(e){setError(message(e))}}
@@ -223,7 +223,17 @@ export function OrderView({orderId,onClose,account,shop,extra,reorder}:DetailPro
         <div className="summary-line total"><b>Total</b><b>{rupee(order.total)}</b></div>
         <div className="summary-line"><span>{pretty(order.payment_method)}</span><Status value={order.payment_status}/></div>
       </section>
-      {account.role==='customer'&&order.status==='awaiting_payment'&&<div className="info-box stack compact"><b>Local payment simulator</b><span>No money is collected.</span><div className="actions"><button className="button primary" disabled={busy} onClick={()=>void operate(()=>send('/orders/'+orderId+'/test-payment',{result:'paid'}),'Test payment completed.')}>Simulate success</button><button className="button secondary" disabled={busy} onClick={()=>void operate(()=>send('/orders/'+orderId+'/test-payment',{result:'failed'}),'Test payment cancelled.')}>Simulate failure</button></div></div>}
+      {account.role==='customer'&&local&&order.status==='awaiting_payment'&&<div className="info-box stack compact"><b>Local payment simulator</b><span>No money is collected.</span><div className="actions"><button className="button primary" disabled={busy} onClick={()=>void operate(()=>send('/orders/'+orderId+'/test-payment',{result:'paid'}),'Test payment completed.')}>Simulate success</button><button className="button secondary" disabled={busy} onClick={()=>void operate(()=>send('/orders/'+orderId+'/test-payment',{result:'failed'}),'Test payment cancelled.')}>Simulate failure</button></div></div>}
+      {account.role==='customer'&&!local&&order.status==='awaiting_payment'&&<div className="info-box stack compact">
+        <b>Razorpay Test Mode</b><span>Use test payment details. Refresh this order after Razorpay returns.</span>
+        <button className="button primary" disabled={busy} onClick={()=>void operate(async()=>{
+          const result=await send<{url:string}>('/orders/'+orderId+'/payment-link',{})
+          const url=new URL(result.url)
+          if(url.origin!=='https://rzp.io')throw new Error('Unexpected payment destination.')
+          location.assign(url)
+        },'Opening Razorpay…')}>Open Razorpay</button>
+      </div>}
+      {order.refundPending&&<p className="muted">Razorpay refund pending confirmation.</p>}
       {extra?.(order,refresh)}
       {account.role!=='rider'&&order.status!=='awaiting_payment'&&<div className="actions">
         {['completed','placed','accepted','packing','ready','out_for_delivery'].includes(order.status)&&<button className="button secondary" onClick={()=>void operate(()=>invoice(order),'Bill downloaded.')}><FileDown size={16}/> Download bill</button>}

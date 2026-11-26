@@ -8,9 +8,10 @@ import { basename,join,resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { DatabaseSync } from 'node:sqlite'
 
-const [mode,source,destination]=process.argv.slice(2)
-assert.ok(['backup','verify'].includes(mode)&&source&&destination,
-  'Usage: node tools/backup-d1.mjs backup WRANGLER_CONFIG BACKUP_DIR OR verify ENCRYPTED_BACKUP RESTORE_DIR. Passphrase via stdin.')
+const [mode,source,destination,orderId]=process.argv.slice(2)
+assert.ok(['backup','verify','invoice'].includes(mode)&&source&&destination&&
+  (mode!=='invoice'||typeof orderId==='string'&&/^[a-zA-Z0-9_-]{1,80}$/.test(orderId)),
+  'Usage: node tools/backup-d1.mjs backup WRANGLER_CONFIG BACKUP_DIR OR verify ENCRYPTED_BACKUP RESTORE_DIR OR invoice ENCRYPTED_ARCHIVE NEW_JSON ORDER_ID. Passphrase via stdin.')
 const passphrase=readFileSync(0)
 assert.ok(passphrase.toString().trimEnd().length>=16,'Use a merchant-held passphrase of at least 16 characters.')
 const temp=mkdtempSync(join(tmpdir(),'kirana-d1-backup-'))
@@ -43,22 +44,39 @@ function restore(dump,output){
 async function verifyArchive(file){
   const hash=createHash('sha256'),lines=createInterface({input:createReadStream(file),crlfDelay:Infinity})
   let previous='',header,orders=0
+  const receipt={order:null,items:[],refunds:[]}
   for await(const line of lines){
     if(previous){
       hash.update(previous+'\n')
       const data=JSON.parse(previous)
       if(!header)header=data
-      else if(data.table==='orders')orders++
+      else if(data.table==='orders'){
+        orders++
+        if(orderId&&data.row.id===orderId){
+          const {id,status,fulfillment,payment_method,payment_status,fees,subtotal,total,tax,billing_json,created_at}=data.row
+          receipt.order={id,status,fulfillment,payment_method,payment_status,fees,subtotal,total,tax,invoice:JSON.parse(billing_json),created_at}
+        }
+      }else if(orderId&&data.row?.order_id===orderId){
+        if(data.table==='order_items')receipt.items.push(data.row)
+        if(data.table==='refunds')receipt.refunds.push({amount:data.row.amount,created_at:data.row.created_at})
+      }
     }
     previous=line
   }
   assert.equal(header?.format,'kirana-local-archive-v1')
   assert.equal(header.orders,orders)
   assert.equal(JSON.parse(previous).sha256,hash.digest('hex'))
-  return orders
+  return {orders,receipt}
 }
 try{
-  if(mode==='verify'){
+  if(mode==='invoice'){
+    const dump=join(temp,'verified.ndjson')
+    run(tool('merchant-backup.mjs'),['decrypt',resolve(source),dump],passphrase)
+    const {receipt}=await verifyArchive(dump)
+    assert.ok(receipt.order,'Order is absent from this verified archive.')
+    writeFileSync(root,JSON.stringify(receipt,null,2)+'\n',{flag:'wx',mode:0o600})
+    console.log('Verified historical invoice exported.')
+  }else if(mode==='verify'){
     mkdirSync(root,{mode:0o700})
     const dump=join(temp,'verified.sql'),sqlite=join(root,'recovered.sqlite')
     try{
@@ -89,7 +107,7 @@ try{
           const encryptedArchive=join(pending,'settled.ndjson.enc'),checkedArchive=join(temp,'settled-verified.ndjson')
           run(tool('merchant-backup.mjs'),['encrypt',archive,encryptedArchive],passphrase)
           run(tool('merchant-backup.mjs'),['decrypt',encryptedArchive,checkedArchive],passphrase)
-          result.settledOrders=await verifyArchive(checkedArchive)
+          result.settledOrders=(await verifyArchive(checkedArchive)).orders
         }
       }
       writeFileSync(join(pending,'verified.json'),JSON.stringify({date,verified:['DB','MEDIA','settled'],method:'authenticated decrypt and SQLite integrity check'},null,2),{mode:0o600})

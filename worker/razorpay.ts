@@ -2,47 +2,28 @@ import { Hono } from 'hono'
 import { all,json,now,one,Problem,role,S,statement } from './shared'
 import type { Env } from './shared'
 import { reserve } from './budget'
+import { applyOrderPaymentEvent } from './checkout-payments'
+import { identifier,provider,safePaymentLink,testCredentials,validWebhook } from './payment-provider'
 
 export const razorpay=new Hono<Env>()
-const prefix='https://api.razorpay.com/v1'
 const value=100
-const identifier=(id:unknown,prefix:string):id is string=>typeof id==='string'&&new RegExp('^'+prefix+'_[A-Za-z0-9]{6,60}$').test(id)
 type Payment={reference:string;owner_id:string;link_id:string|null;url:string|null;payment_id:string|null;refund_id:string|null;amount:number;status:string;created_at:number}
-type Credentials={key:string;secret:string;webhook:string}
-function configured(env:Env['Bindings']):Credentials|null{
-  const {APP_MODE,RAZORPAY_KEY_ID,RAZORPAY_KEY_SECRET,RAZORPAY_WEBHOOK_SECRET}=env
-  if(APP_MODE!=='staging'||!RAZORPAY_KEY_ID||!/^rzp_test_[A-Za-z0-9]+$/.test(RAZORPAY_KEY_ID)||!RAZORPAY_KEY_SECRET||!RAZORPAY_WEBHOOK_SECRET)return null
-  return {key:RAZORPAY_KEY_ID,secret:RAZORPAY_KEY_SECRET,webhook:RAZORPAY_WEBHOOK_SECRET}
-}
-export async function validWebhook(body:ArrayBuffer,signature:string,secret:string){
-  if(!/^[a-f0-9]{64}$/i.test(signature))return false
-  const key=await crypto.subtle.importKey('raw',new TextEncoder().encode(secret),{name:'HMAC',hash:'SHA-256'},false,['verify'])
-  const bytes=Uint8Array.from(signature.match(/../g)!,hex=>parseInt(hex,16))
-  return crypto.subtle.verify('HMAC',key,bytes,body)
-}
-function provider(credentials:Credentials,path:string,options:RequestInit={}){
-  return fetch(prefix+path,{...options,redirect:'error',signal:AbortSignal.timeout(6500),
-    headers:{Authorization:'Basic '+btoa(credentials.key+':'+credentials.secret),'Content-Type':'application/json',...options.headers}})
-}
-function safeLink(url:unknown){
-  if(typeof url!=='string')return false
-  try{const path=new URL(url);return path.origin==='https://rzp.io'&&!path.username&&!path.password}catch{return false}
-}
+export { validWebhook } from './payment-provider'
 const listed='reference,url,amount,status,created_at'
 razorpay.get('/admin/payments/test',async c=>{
-  const actor=role(c,'owner'), credentials=configured(c.env)
+  const actor=role(c,'owner'), credentials=testCredentials(c.env)
   if(!credentials)return c.json({enabled:false,attempts:[]})
   return c.json({enabled:true,attempts:await all(c.env.DB,`SELECT ${listed} FROM test_payments WHERE owner_id=? ORDER BY created_at DESC LIMIT 10`,actor.id)})
 })
 razorpay.post('/admin/payments/test',async c=>{
-  const actor=role(c,'owner'), credentials=configured(c.env)
+  const actor=role(c,'owner'), credentials=testCredentials(c.env)
   if(!credentials)throw new Problem(503,'Razorpay test credentials are not configured.')
   const data=await json(c), reference=S(data.reference,'test checkout reference',36)
   if(!/^[a-f0-9-]{36}$/.test(reference))throw new Problem(400,'Invalid test checkout reference.')
   const db=c.env.DB
   const existing=await one<Payment>(db,'SELECT * FROM test_payments WHERE reference=? AND owner_id=?',reference,actor.id)
   if(existing&&existing.status!=='creating')return c.json({reference,url:existing.url,status:existing.status})
-  if(!await reserve(db,'razorpay-test',1,30,2))throw new Problem(429,'The test payment limit was reached.')
+  if(!await reserve(db,'razorpay-link',1,30,2))throw new Problem(429,'The test payment limit was reached.')
   const created=await statement(db,"INSERT OR IGNORE INTO test_payments(reference,owner_id,amount,status,created_at) VALUES(?,?,?,'creating',?)",reference,actor.id,value,now()).run()
   let link:{id?:string;short_url?:string;reference_id?:string;amount?:number;currency?:string}
   if(created.meta.changes){
@@ -65,7 +46,7 @@ razorpay.post('/admin/payments/test',async c=>{
     if(!match)throw new Problem(409,'The test link is pending. Check Razorpay before issuing a new reference.')
     link=match
   }
-  if(!identifier(link.id,'plink')||!safeLink(link.short_url)||link.reference_id!==reference||link.amount!==value||link.currency!=='INR'){
+  if(!identifier(link.id,'plink')||!safePaymentLink(link.short_url)||link.reference_id!==reference||link.amount!==value||link.currency!=='INR'){
     throw new Problem(503,'Razorpay returned an unexpected test link.')
   }
   await statement(db,"UPDATE test_payments SET link_id=?,url=?,status='open' WHERE reference=? AND owner_id=? AND status='creating'",
@@ -73,7 +54,7 @@ razorpay.post('/admin/payments/test',async c=>{
   return c.json({reference,url:link.short_url,status:'open'})
 })
 razorpay.post('/admin/payments/test/:reference/refund',async c=>{
-  const actor=role(c,'owner'),credentials=configured(c.env)
+  const actor=role(c,'owner'),credentials=testCredentials(c.env)
   if(!credentials)throw new Problem(503,'Razorpay test credentials are not configured.')
   const db=c.env.DB, reference=c.req.param('reference')
   const payment=await one<Payment>(db,'SELECT * FROM test_payments WHERE reference=? AND owner_id=?',reference,actor.id)
@@ -96,7 +77,7 @@ razorpay.post('/admin/payments/test/:reference/refund',async c=>{
   return c.json({status})
 })
 razorpay.post('/webhooks/razorpay',async c=>{
-  const credentials=configured(c.env)
+  const credentials=testCredentials(c.env)
   if(!credentials)throw new Problem(404,'Razorpay staging webhook unavailable.')
   const body=await c.req.arrayBuffer(),signature=c.req.header('X-Razorpay-Signature')??''
   if(!await validWebhook(body,signature,credentials.webhook))throw new Problem(403,'Invalid webhook signature.')
@@ -105,6 +86,7 @@ razorpay.post('/webhooks/razorpay',async c=>{
   try{event=JSON.parse(new TextDecoder().decode(body))}catch{throw new Problem(400,'Invalid webhook body.')}
   const link=event.payload?.payment_link?.entity, payment=event.payload?.payment?.entity, refund=event.payload?.refund?.entity
   const db=c.env.DB
+  if(await applyOrderPaymentEvent(db,event))return c.json({ok:true})
   if(event.event==='payment_link.paid'&&identifier(link?.id,'plink')&&identifier(payment?.id,'pay')&&
     link?.amount===value&&link.currency==='INR'&&link.amount_paid===value&&payment?.currency==='INR'&&payment.amount===value&&payment.status==='captured'){
     await statement(db,`UPDATE test_payments SET status='paid',payment_id=?

@@ -2,14 +2,14 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
 const [configPath,mode='smoke',quotaPath]=process.argv.slice(2)
-assert.ok(configPath&&['smoke','target'].includes(mode),'Usage: node tests/hosted-benchmark.mjs PRIVATE_CONFIG [smoke|target FRESH_QUOTA_JSON]')
+assert.ok(configPath&&['smoke','target','browse'].includes(mode),'Usage: node tests/hosted-benchmark.mjs PRIVATE_CONFIG [smoke|browse|target FRESH_QUOTA_JSON]')
 const config=JSON.parse(readFileSync(configPath,'utf8'))
 const url=new URL(config.url)
 assert.match(url.hostname,/^kirana-benchmark-staging-api\.[a-z0-9-]+\.workers\.dev$/)
 assert.equal(url.protocol,'https:')
 assert.equal(url.origin,config.url)
 assert.match(config.token,/^[a-f0-9]{64}$/)
-const target=mode==='target',counts=target?{online:800,pos:300,sku:5000,width:24,visits:8}:{online:30,pos:12,sku:180,width:6,visits:3}
+const target=mode==='target',browseOnly=mode==='browse',counts=target?{online:800,pos:300,sku:5000,width:32,visits:8}:browseOnly?{online:0,pos:0,sku:180,width:32,visits:8}:{online:30,pos:12,sku:180,width:6,visits:3}
 const maxWrites=target?76000:5000
 if(target){
   // Confirm no staging seed work occurred against this account on the same UTC day.
@@ -56,56 +56,70 @@ function client(){
 }
 const post=(who,path,data={},expected)=>who('/api'+path,{method:'POST',data,expected})
 const owner=client(),rider=client(),guest=client()
-await post(owner,'/auth/demo',{role:'owner'})
-await post(rider,'/auth/demo',{role:'rider'})
 const catalog=(await guest('/api/__benchmark/catalog-size')).total
 assert.ok(catalog>=counts.sku&&(!target||catalog===5000),'The hosted catalog is smaller than the selected workload.')
-const before=(await owner('/api/admin/summary?days=2')).metrics
-const shoppers=await Promise.all(Array.from({length:counts.width},async(_,index)=>{
-  const call=client()
-  const name='Synthetic shopper '+index
-  await post(call,'/auth/register-local',{name})
-  const address=await post(call,'/addresses',{label:'Test',recipient:name,phone:'9000000099',
-    line1:'Synthetic lane',locality:'Hyderabad fixture',landmark:'',pin:'500034',latitude:17.413,longitude:78.421},201)
-  return {call,addressId:address.id}
-}))
-const pickup=await guest('/api/slots?mode=pickup'),delivery=await guest('/api/slots?mode=delivery')
-assert.ok(pickup.length&&delivery.length)
-let task=0
-const start=performance.now()
-async function sale(position,shopper){
-  const online=position%3!==0||position/3>=counts.pos
-  const pickupIndex=position%pickup.length,drops=online&&position%13===1
-  const fixtureSkus=counts.sku-16
-  const items=Array.from({length:6},(_,i)=>({id:'load-'+String((position*13+i)%fixtureSkus+1).padStart(4,'0'),steps:1}))
-  const method=online&&position%4===1?'online':'cash'
-  const checkout={fulfillment:online?(drops?'delivery':'pickup'):'counter',method,items,
-    ...(online?{slot:drops?delivery[position%delivery.length].start:pickup[pickupIndex].start}:{})}
-  if(drops)checkout.addressId=shopper.addressId
-  const call=online?shopper.call:owner
-  if(online)for(let i=0;i<counts.visits;i++)await Promise.all([
-    guest('/api/catalog?category=pantry&limit=12'),
-    guest('/api/catalog?q=benchmark+'+String((position+i)%fixtureSkus+1).padStart(4,'0')+'&limit=12'),
-    guest('/api/store'),
-  ])
-  const quote=await post(call,'/quote',checkout)
-  const {id}=await post(call,online?'/orders':'/pos',{...checkout,key:crypto.randomUUID(),version:quote.version},201)
-  if(online){
-    const move=(actor,status,more={})=>post(actor,'/orders/'+id+'/state',{status,...more})
-    if(method==='online')await post(call,'/orders/'+id+'/test-payment',{result:'paid'})
-    await move(owner,'accepted')
-    if(drops)await post(owner,'/orders/'+id+'/assign')
-    await move(owner,'packing')
-    await move(owner,'ready')
-    if(drops)await move(rider,'out_for_delivery')
-    await move(drops?rider:owner,'completed',method==='cash'?{cash:quote.total}:{})
-  }
+const browse=async index=>{
+  const sku=String(index%(catalog-16)+1).padStart(4,'0')
+  await guest('/api/catalog?category=pantry&limit=12')
+  await guest('/api/catalog?q=benchmark+'+sku+'&limit=12')
 }
-await Promise.all(shoppers.map(async shopper=>{while(task<counts.online+counts.pos)await sale(task++,shopper)}))
-const after=(await owner('/api/admin/summary?days=2')).metrics
-assert.equal(after.online_orders-before.online_orders,counts.online)
-assert.equal(after.walk_in-before.walk_in,counts.pos)
-assert.equal(after.completed-before.completed,counts.online+counts.pos)
+async function sales(){
+  await post(owner,'/auth/demo',{role:'owner'})
+  await post(rider,'/auth/demo',{role:'rider'})
+  const before=(await owner('/api/admin/summary?days=2')).metrics
+  const shoppers=await Promise.all(Array.from({length:counts.width},async(_,index)=>{
+    const call=client()
+    const name='Synthetic shopper '+index
+    await post(call,'/auth/register-local',{name})
+    const address=await post(call,'/addresses',{label:'Test',recipient:name,phone:'9000000099',
+      line1:'Synthetic lane',locality:'Hyderabad fixture',landmark:'',pin:'500034',latitude:17.413,longitude:78.421},201)
+    return {call,addressId:address.id}
+  }))
+  const pickup=await guest('/api/slots?mode=pickup'),delivery=await guest('/api/slots?mode=delivery')
+  assert.ok(pickup.length&&delivery.length)
+  let task=0
+  async function sale(position,shopper){
+    const online=position%3!==0||position/3>=counts.pos
+    const pickupIndex=position%pickup.length,drops=online&&position%13===1
+    const fixtureSkus=counts.sku-16
+    const items=Array.from({length:6},(_,i)=>({id:'load-'+String((position*13+i)%fixtureSkus+1).padStart(4,'0'),steps:1}))
+    const method=online&&position%4===1?'online':'cash'
+    const checkout={fulfillment:online?(drops?'delivery':'pickup'):'counter',method,items,
+      ...(online?{slot:drops?delivery[position%delivery.length].start:pickup[pickupIndex].start}:{})}
+    if(drops)checkout.addressId=shopper.addressId
+    const call=online?shopper.call:owner
+    if(online)for(let i=0;i<counts.visits;i++)await Promise.all([
+      guest('/api/catalog?category=pantry&limit=12'),
+      guest('/api/catalog?q=benchmark+'+String((position+i)%fixtureSkus+1).padStart(4,'0')+'&limit=12'),
+      guest('/api/store'),
+    ])
+    const quote=await post(call,'/quote',checkout)
+    const {id}=await post(call,online?'/orders':'/pos',{...checkout,key:crypto.randomUUID(),version:quote.version},201)
+    if(online){
+      const move=(actor,status,more={})=>post(actor,'/orders/'+id+'/state',{status,...more})
+      if(method==='online')await post(call,'/orders/'+id+'/test-payment',{result:'paid'})
+      await move(owner,'accepted')
+      if(drops)await post(owner,'/orders/'+id+'/assign')
+      await move(owner,'packing')
+      await move(owner,'ready')
+      if(drops)await move(rider,'out_for_delivery')
+      await move(drops?rider:owner,'completed',method==='cash'?{cash:quote.total}:{})
+    }
+  }
+  await Promise.all(shoppers.map(async shopper=>{while(task<counts.online+counts.pos)await sale(task++,shopper)}))
+  const after=(await owner('/api/admin/summary?days=2')).metrics
+  assert.equal(after.online_orders-before.online_orders,counts.online)
+  assert.equal(after.walk_in-before.walk_in,counts.pos)
+  assert.equal(after.completed-before.completed,counts.online+counts.pos)
+}
+const start=performance.now()
+if(browseOnly||target){
+  await Promise.all(Array.from({length:32},async(_,index)=>{
+    await guest('/api/store')
+    for(let visit=0;visit<8;visit++)await browse(index*8+visit)
+  }))
+}
+if(!browseOnly)await sales()
 const elapsed=performance.now()-start
 const percentiles=samples=>{
   samples.sort((a,b)=>a-b)

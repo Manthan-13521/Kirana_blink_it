@@ -269,16 +269,17 @@ function Setup({shop,refresh}:{shop:Shop;refresh:()=>Promise<void>}){
   </section>
 }
 function Team(){
-  const [rows,setRows]=useState<(Account&{active:number})[]>([]),[error,setError]=useState(''),[code,setCode]=useState(''),[kind,setKind]=useState('staff')
+  const [rows,setRows]=useState<(Account&{active:number})[]>([]),[error,setError]=useState(''),[code,setCode]=useState(''),[kind,setKind]=useState('staff'),[email,setEmail]=useState('')
   const load=async()=>{try{setRows(await api<typeof rows>('/admin/team'))}catch(e){setError(message(e))}}
   useEffect(()=>{void load()},[])
   return <section className="stack"><Heading title="Team access" detail="Grant role-specific access. Only one delivery partner can be active."/><ErrorText text={error}/>
     <div className="panel padded stack">{rows.map(person=><div key={person.id} className="summary-line"><div><strong>{person.name}</strong><small className="table-secondary">{pretty(person.role)} · {person.active?'Active':'Revoked'}</small></div>
       {person.role!=='owner'&&Boolean(person.active)&&<button className="button secondary" onClick={async()=>{setError('');try{await send('/admin/team/'+person.id+'/revoke');await load()}catch(e){setError(message(e))}}}>Revoke</button>}</div>)}</div>
     <form className="panel padded stack" onSubmit={async e=>{e.preventDefault();setError('');setCode('')
-      try{setCode((await send<{code:string}>('/admin/team/invite',{role:kind})).code)}catch(e){setError(message(e))}
+      try{setCode((await send<{code:string}>('/admin/team/invite',{role:kind,email})).code)}catch(e){setError(message(e))}
     }}><label>Invite a team member<select value={kind} onChange={e=>setKind(e.target.value)}><option value="staff">Store staff</option><option value="rider">Delivery partner</option></select></label>
-      <button className="button primary align-start">Create local invitation</button>{code&&<label>One-time invitation code<input value={code} readOnly onFocus={e=>e.target.select()}/></label>}
+      <label>Google account email<input type="email" required maxLength={254} value={email} onChange={e=>setEmail(e.target.value)}/></label>
+      <button className="button primary align-start">Create invitation</button>{code&&<label>One-time invitation code<input value={code} readOnly onFocus={e=>e.target.select()}/></label>}
     </form>
   </section>
 }

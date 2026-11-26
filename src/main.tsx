@@ -18,6 +18,27 @@ function readCart(key:string):CartLine[]|null{
     return raw&&Date.now()-raw.saved<172800000&&Array.isArray(raw.lines)?raw.lines:null
   }catch{return null}
 }
+async function loadBasket(actor:Account|null,afterSignIn=false,checkout=false){
+  if(actor?.role!=='customer')return {lines:readCart(cartKey())??[],changed:false}
+  const cached=readCart(cartKey(actor.id))
+  const saved=cached?null:await api<{lines:CartLine[]}>('/cart').catch(()=>null)
+  const existing=cached??saved?.lines??[]
+  if(!afterSignIn||existing.length&&!checkout)return {lines:existing,changed:false}
+  const guest=readCart(cartKey())??[]
+  if(!guest.length)return {lines:existing,changed:false}
+  const combined=new Map(existing.map(line=>[line.product.id,line]))
+  for(const line of guest){
+    const product=line.product,prior=combined.get(product.id)
+    if(!prior&&combined.size>=40)continue
+    const max=Math.min(product.max_steps,Math.floor(product.stock/product.step))
+    const steps=Math.min(max,(prior?.steps??0)+line.steps)
+    if(steps>=product.min_steps)combined.set(product.id,{product,steps})
+  }
+  return {lines:[...combined.values()],changed:true}
+}
+function clearGuestBasket(){
+  try{localStorage.removeItem(cartKey())}catch{/* Storage access can be disabled by the browser. */}
+}
 type Modal='signin'|'profile'|'orders'|'location'|'notices'|null
 
 function App(){
@@ -26,7 +47,7 @@ function App(){
   const [view,setView]=useState(pathView),[query,setQuery]=useState(''),[modal,setModal]=useState<Modal>(null)
   const [loginRole,setLoginRole]=useState<'customer'|'owner'|'rider'>('customer')
   const [cart,setCart]=useState<CartLine[]>([]),[cartOpen,openCart]=useState(false),[order,setOrder]=useState<string|null>(null)
-  const [resumeCheckout,setResumeCheckout]=useState(false)
+  const [resumeCheckout,setResumeCheckout]=useState(false),[paymentReview,setPaymentReview]=useState(false)
   const checkoutIntent=useRef(false)
   const cartChanged=useRef(false)
   const cartCount=cart.reduce((count,line)=>count+line.steps,0)
@@ -34,10 +55,21 @@ function App(){
   const refreshShop=useCallback(async()=>{const result=await api<{settings:Shop;local:boolean}>('/store',{cache:'reload'});setShop(result.settings);setLocal(result.local)},[])
   useEffect(()=>{
     Promise.all([refreshShop(),api<{account:Account|null}>('/me')]).then(async([,me])=>{
-      const key=cartKey(me.account?.role==='customer'?me.account.id:undefined)
-      const cached=readCart(key)
-      const saved=!cached&&me.account?.role==='customer'?await api<{lines:CartLine[]}>('/cart').catch(()=>null):null
-      setAccount(me.account);setCart(cached??saved?.lines??[]);setReady(true)
+      const url=new URL(window.location.href)
+      const checkout=url.searchParams.get('checkout')==='resume'&&me.account?.role==='customer'
+      const signedIn=checkout||url.searchParams.get('signin')==='complete'
+      const basket=await loadBasket(me.account,signedIn,checkout)
+      const orderId=url.searchParams.get('order'),review=url.searchParams.get('payment')==='review'
+      if(signedIn||orderId||review){
+        for(const key of ['checkout','signin','order','payment'])url.searchParams.delete(key)
+        history.replaceState({},'',url)
+      }
+      if(orderId&&me.account?.role==='customer'&&/^[0-9a-f-]{36}$/.test(orderId))setOrder(orderId)
+      if(review)setPaymentReview(true)
+      cartChanged.current=basket.changed
+      if(basket.changed)clearGuestBasket()
+      setAccount(me.account);setCart(basket.lines);setReady(true)
+      if(checkout&&basket.lines.length){setResumeCheckout(true);openCart(true)}
     },e=>{setError(message(e));setReady(true)})
     const handle=()=>{setView(pathView());setModal(null);setOrder(null);openCart(false)}
     window.addEventListener('popstate',handle)
@@ -62,27 +94,10 @@ function App(){
   }
   const signIn=(role:'customer'|'owner'|'rider')=>{setLoginRole(role);setModal('signin')}
   async function signed(actor:Account){
-    cartChanged.current=false
-    if(actor.role==='customer'){
-      const key=cartKey(actor.id)
-      const cached=readCart(key)
-      const saved=cached?null:await api<{lines:CartLine[]}>('/cart').catch(()=>null)
-      const guest=readCart(cartKey())??[]
-      const existing=cached??saved?.lines??[]
-      if(guest.length&&(checkoutIntent.current||!existing.length)){
-        const combined=new Map(existing.map(line=>[line.product.id,line]))
-        for(const line of guest){
-          const product=line.product
-          const prior=combined.get(product.id)
-          if(!prior&&combined.size>=40)continue
-          const max=Math.min(product.max_steps,Math.floor(product.stock/product.step))
-          const steps=Math.min(max,(prior?.steps??0)+line.steps)
-          if(steps>=product.min_steps)combined.set(product.id,{product,steps})
-        }
-        setCart([...combined.values()]);cartChanged.current=true
-        try{localStorage.removeItem(cartKey())}catch{/* Storage access can be disabled by the browser. */}
-      }else setCart(existing)
-    } else setCart(readCart(cartKey())??[])
+    const basket=await loadBasket(actor,true,checkoutIntent.current)
+    cartChanged.current=basket.changed
+    setCart(basket.lines)
+    if(basket.changed)clearGuestBasket()
     setAccount(actor);setModal(null)
     if(actor.role==='owner'||actor.role==='staff')go('owner')
     if(actor.role==='rider')go('rider')
@@ -144,18 +159,19 @@ function App(){
       :!allowed||!account?<main className="shell role-entry">
         <div className="console-hero"><div><small>{view==='owner'?'STORE WORKSPACE':'DELIVERY WORKSPACE'}</small><h1>{view==='owner'?'Manage your Kirana':'Deliver for your Kirana'}</h1><p>{view==='owner'?'Catalog, orders, counter sales and store settings.':'Assigned orders, route stops and cash collections.'}</p></div><button className="button light" onClick={()=>signIn(currentRole)}>Sign in as {view==='owner'?'owner':'rider'} <ArrowRight size={17}/></button></div>
       </main>:<Suspense fallback={<main className="shell startup"><p>Loading workspace…</p></main>}>{view==='owner'?<Owner account={account} shop={shop} refreshShop={refreshShop}/>:<Rider account={account} shop={shop}/>}</Suspense>}
-    {modal==='signin'&&<SignIn role={loginRole} local={local} close={()=>{checkoutIntent.current=false;setModal(null)}} signed={signed}/>}
+    {modal==='signin'&&<SignIn role={loginRole} local={local} checkout={checkoutIntent.current} close={()=>{checkoutIntent.current=false;setModal(null)}} signed={signed}/>}
     {modal==='profile'&&account&&<Profile account={account} setAccount={setAccount} local={local} close={()=>setModal(null)} logOut={()=>void logOut()} orders={()=>setModal('orders')} addresses={()=>setModal('location')} switchRole={()=>signIn(currentRole)}/>}
     {modal==='orders'&&account&&<Sheet title="Order history" onClose={()=>setModal(null)} wide><OrderList open={id=>{setModal(null);setOrder(id)}}/></Sheet>}
     {modal==='location'&&<Location shop={shop} account={account} onClose={()=>setModal(null)} signIn={()=>signIn('customer')}/>}
     {modal==='notices'&&account&&<Notices customer={account?.role==='customer'} local={local} close={()=>setModal(null)} open={id=>{setModal(null);setOrder(id)}}/>}
-    {order&&account&&<OrderView orderId={order} onClose={()=>setOrder(null)} account={account} shop={shop} reorder={account.role==='customer'?reorder:undefined}/>}
+    {paymentReview&&<Sheet title="Check payment status" onClose={()=>setPaymentReview(false)}><p>Open your order history to check whether Razorpay confirmed your payment before trying again.</p></Sheet>}
+    {order&&account&&<OrderView local={local} orderId={order} onClose={()=>setOrder(null)} account={account} shop={shop} reorder={account.role==='customer'?reorder:undefined}/>}
   </div>
 }
 
-function SignIn({role,local,close,signed}:{role:'customer'|'owner'|'rider';local:boolean;close:()=>void;signed:(a:Account)=>Promise<void>}){
+function SignIn({role,local,checkout,close,signed}:{checkout:boolean;role:'customer'|'owner'|'rider';local:boolean;close:()=>void;signed:(a:Account)=>Promise<void>}){
   const [error,setError]=useState(''),[busy,setBusy]=useState(false),[register,setRegister]=useState(false)
-  const [google,setGoogle]=useState<boolean|null>(null)
+  const [google,setGoogle]=useState<boolean|null>(null),[invite,setInvite]=useState('')
   useEffect(()=>{
     if(local)return
     const controller=new AbortController()
@@ -170,7 +186,17 @@ function SignIn({role,local,close,signed}:{role:'customer'|'owner'|'rider';local
   }
   return <Sheet title={register?'Create local account':'Welcome to Kirana'} onClose={close}>
     <div className="stack"><ErrorText text={error}/>
-      {!local?google?<a className="button primary full" href={'/api/auth/google?workspace='+(role==='customer'?'shop':role)}>Continue with Google <ArrowRight size={16}/></a>:<p>{google===null?'Checking sign-in availability…':'Google sign-in is not configured for this preview.'}</p>
+      {!local?google?<form className="stack" onSubmit={async e=>{
+        e.preventDefault();setError('');setBusy(true)
+        try{
+          const {url}=await send<{url:string}>('/auth/google',{workspace:role==='customer'?'shop':role,checkout,invite})
+          if(new URL(url).origin!=='https://accounts.google.com')throw new Error('Google sign-in returned an invalid link.')
+          window.location.assign(url)
+        }catch(e){setError(message(e));setBusy(false)}
+      }}>
+        {role!=='customer'&&<label>Team invitation code (if provided)<input autoComplete="off" maxLength={64} value={invite} onChange={e=>setInvite(e.target.value)}/></label>}
+        <button className="button primary full" disabled={busy}>Continue with Google <ArrowRight size={16}/></button>
+      </form>:<p>{google===null?'Checking sign-in availability…':'Google sign-in is not configured for this preview.'}</p>
       :register?<form className="stack" onSubmit={async e=>{
         e.preventDefault();setBusy(true);setError('')
         try{await signed(await send<Account>('/auth/register-local',Object.fromEntries(new FormData(e.currentTarget))))}catch(e){setError(message(e))}finally{setBusy(false)}
