@@ -17,7 +17,11 @@ export function testCredentials(env:Bindings){
 }
 export function checkoutCredentials(env:Bindings){
   const credentials=paymentCredentials(env)
-  return credentials&&(credentials.mode==='test'||env.RAZORPAY_LIVE_CHECKOUT==='enabled')?credentials:null
+  if(!credentials)return null
+  if(credentials.mode==='test')return {...credentials,checkoutConfig:null}
+  const checkoutConfig=env.RAZORPAY_UPI_CONFIG_ID
+  if(env.RAZORPAY_LIVE_CHECKOUT!=='enabled'||!identifier(checkoutConfig,'config'))return null
+  return {...credentials,checkoutConfig}
 }
 export const identifier=(id:unknown,prefix:string):id is string=>typeof id==='string'&&new RegExp('^'+prefix+'_[A-Za-z0-9]{6,60}$').test(id)
 export const uuid=(id:unknown):id is string=>typeof id==='string'&&/^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(id)

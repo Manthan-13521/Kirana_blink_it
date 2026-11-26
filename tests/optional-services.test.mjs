@@ -258,7 +258,14 @@ test('Standard Checkout flags require matching modes and explicit live collectio
   assert.equal(paymentCredentials(optedIn).mode,'live')
   assert.equal(checkoutCredentials(optedIn),null)
   assert.equal(testCredentials({...optedIn,RAZORPAY_LIVE_CHECKOUT:'enabled'}),null)
-  assert.equal(checkoutCredentials({...optedIn,RAZORPAY_LIVE_CHECKOUT:'enabled'}).mode,'live')
+  const collection={...optedIn,RAZORPAY_LIVE_CHECKOUT:'enabled'}
+  assert.equal(checkoutCredentials(collection),null)
+  assert.equal(checkoutCredentials({...collection,RAZORPAY_UPI_CONFIG_ID:'card_config'}),null)
+  assert.equal(checkoutCredentials({...collection,RAZORPAY_UPI_CONFIG_ID:'config_UPIFixture'}).checkoutConfig,'config_UPIFixture')
+  const {checkoutDisplay}=await import('../src/razorpay-checkout.ts')
+  assert.deepEqual(checkoutDisplay('live').display.blocks.upi.instruments,[{method:'upi'}])
+  assert.equal(checkoutDisplay('live').display.preferences.show_default_blocks,false)
+  assert.equal(checkoutDisplay('test'),undefined)
   assert.equal(checkoutCredentials({...optedIn,APP_MODE:'local',RAZORPAY_LIVE_CHECKOUT:'enabled'}),null)
   assert.equal(checkoutCredentials({...base,RAZORPAY_KEY_ID:'rzp_test_Fixture'}).mode,'test')
 })
@@ -333,6 +340,26 @@ test('Standard Checkout retries one provider order and accepts only matching cap
   assert.deepEqual(await (await post('/verify',proof)).json(),{state:'confirmed'})
   assert.deepEqual(await (await post('/verify',proof)).json(),{state:'confirmed'})
   assert.equal((await post('/cancel')).status,409)
+
+  const liveId='77777777-7777-4777-8777-777777777777'
+  seedPending(sqlite,liveId,time)
+  const liveEnv={...env,RAZORPAY_MODE:'live',RAZORPAY_KEY_ID:'rzp_live_Fixture',RAZORPAY_LIVE_CHECKOUT:'enabled'}
+  const conf='config_UPIFixture'
+  let liveCalls=0
+  globalThis.fetch=async (url,init)=>{
+    liveCalls++
+    assert.equal(new URL(url).pathname,'/v1/orders')
+    const body=JSON.parse(init.body)
+    assert.equal(body.checkout_config_id,conf)
+    assert.equal(body.receipt,liveId)
+    assert.equal(body.notes.kirana_checkout_config,conf)
+    return Response.json({...providerOrder,id:'order_upiFixture',receipt:liveId,notes:body.notes})
+  }
+  const live=(vars)=>app.request('/orders/'+liveId+'/payment',{method:'POST',headers:{'x-fixture-preview':'yes'}},{...liveEnv,...vars})
+  assert.equal((await live({})).status,503)
+  assert.equal((await live({RAZORPAY_UPI_CONFIG_ID:conf})).status,200)
+  assert.equal((await live({RAZORPAY_UPI_CONFIG_ID:'config_NextFixture'})).status,409)
+  assert.equal(liveCalls,1)
 })
 
 function seedPending(db,id,time){

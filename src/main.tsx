@@ -169,22 +169,25 @@ function App(){
 
 function SignIn({role,local,checkout,close,signed}:{checkout:boolean;role:'customer'|'owner'|'rider';local:boolean;close:()=>void;signed:(a:Account)=>Promise<void>}){
   const [error,setError]=useState(''),[busy,setBusy]=useState(false),[register,setRegister]=useState(false)
-  const [google,setGoogle]=useState<boolean|null>(null),[invite,setInvite]=useState('')
+  const [google,setGoogle]=useState<'checking'|'enabled'|'disabled'|'unavailable'>('checking')
+  const [attempt,setAttempt]=useState(0),[invite,setInvite]=useState('')
   useEffect(()=>{
     if(local)return
     const controller=new AbortController()
-    api<{enabled:boolean}>('/auth/google/status',{signal:controller.signal}).then(status=>setGoogle(status.enabled),()=>{
-      if(!controller.signal.aborted)setGoogle(false)
+    api<{enabled:boolean}>('/auth/google/status',{signal:controller.signal}).then(status=>{
+      if(!controller.signal.aborted)setGoogle(status?.enabled===true?'enabled':status?.enabled===false?'disabled':'unavailable')
+    },()=>{
+      if(!controller.signal.aborted)setGoogle('unavailable')
     })
     return()=>controller.abort()
-  },[local])
+  },[local,attempt])
   async function demo(choice:string){
     setBusy(true);setError('')
     try{await signed(await send<Account>('/auth/demo',{role:choice}))}catch(e){setError(message(e))}finally{setBusy(false)}
   }
   return <Sheet title={register?'Create local account':'Welcome to Kirana'} onClose={close}>
     <div className="stack"><ErrorText text={error}/>
-      {!local?google?<form className="stack" onSubmit={async e=>{
+      {!local?google==='enabled'?<form className="stack" onSubmit={async e=>{
         e.preventDefault();setError('');setBusy(true)
         try{
           const {url}=await send<{url:string}>('/auth/google',{workspace:role==='customer'?'shop':role,checkout,invite})
@@ -194,7 +197,9 @@ function SignIn({role,local,checkout,close,signed}:{checkout:boolean;role:'custo
       }}>
         {role!=='customer'&&<label>Team invitation code (if provided)<input autoComplete="off" maxLength={64} value={invite} onChange={e=>setInvite(e.target.value)}/></label>}
         <button className="button primary full" disabled={busy}>Continue with Google <ArrowRight size={16}/></button>
-      </form>:<p>{google===null?'Checking sign-in availability…':'Google sign-in is not configured for this preview.'}</p>
+      </form>:google==='unavailable'?<><p role="status">Could not check Google sign-in availability.</p>
+        <button type="button" className="button secondary align-start" onClick={()=>{setGoogle('checking');setAttempt(n=>n+1)}}>Try again</button></>
+      :<p role="status">{google==='checking'?'Checking sign-in availability…':'Google sign-in is not configured for this preview.'}</p>
       :register?<form className="stack" onSubmit={async e=>{
         e.preventDefault();setBusy(true);setError('')
         try{await signed(await send<Account>('/auth/register-local',Object.fromEntries(new FormData(e.currentTarget))))}catch(e){setError(message(e))}finally{setBusy(false)}

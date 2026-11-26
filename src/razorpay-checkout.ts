@@ -1,7 +1,17 @@
 export type PaymentChallenge={key:string;orderId:string;amount:number;currency:'INR';mode:'test'|'live'}
 export type PaymentProof={razorpay_payment_id:string;razorpay_order_id:string;razorpay_signature:string}
+const upiOnly={
+  display:{
+    blocks:{upi:{name:'Pay via UPI',instruments:[{method:'upi'}]}},
+    sequence:['block.upi'],
+    preferences:{show_default_blocks:false},
+  },
+}
+export function checkoutDisplay(mode:PaymentChallenge['mode']){
+  return mode==='live'?upiOnly:undefined
+}
 type CheckoutOptions={
-  key:string;order_id:string;amount:number;currency:string;name:string;description:string
+  key:string;order_id:string;amount:number;currency:string;name:string;description:string;config?:typeof upiOnly
   handler:(proof:PaymentProof)=>void;modal:{ondismiss:()=>void}
 }
 type RazorpayConstructor=new (options:CheckoutOptions)=>{open:()=>void}

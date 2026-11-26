@@ -4,9 +4,9 @@ import { join,resolve } from 'node:path'
 import assert from 'node:assert/strict'
 import { DatabaseSync } from 'node:sqlite'
 
-const [storePath,workerPath,backupDir]=process.argv.slice(2)
-assert.ok(storePath&&workerPath&&backupDir,
-  'Usage: node tools/maintenance.mjs STORE_JSON GENERATED_WORKER_CONFIG PRIVATE_BACKUP_DIR. Passphrase via stdin.')
+const [storePath,workerPath,backupDir,mode]=process.argv.slice(2)
+assert.ok(storePath&&workerPath&&backupDir&&(mode===undefined||mode==='--backup-only'),
+  'Usage: node tools/maintenance.mjs STORE_JSON GENERATED_WORKER_CONFIG PRIVATE_BACKUP_DIR [--backup-only]. Passphrase via stdin.')
 const config=JSON.parse(readFileSync(storePath,'utf8'))
 const worker=JSON.parse(readFileSync(workerPath,'utf8'))
 assert.equal(worker.name,config.slug+'-api')
@@ -34,7 +34,7 @@ try{
   // SQLite releases the lease when an interrupted runner exits. Keep this directory on local disk.
   lock.exec('PRAGMA busy_timeout=0; BEGIN IMMEDIATE')
   once('backup','tools/backup-d1.mjs',['backup',workerPath,backupDir],passphrase)
-  once('static-images','tools/publish-media-static.mjs',[storePath,workerPath])
+  if(!mode)once('static-images','tools/publish-media-static.mjs',[storePath,workerPath])
 }finally{
   passphrase.fill(0)
   lock.close()

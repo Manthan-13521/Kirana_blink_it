@@ -2,11 +2,12 @@ import { createHash,randomUUID } from 'node:crypto'
 import { closeSync,fsyncSync,linkSync,openSync,rmSync,writeFileSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
 
-const [source,destination,cutoffValue,limitValue='1000']=process.argv.slice(2)
-const cutoff=Number(cutoffValue),limit=Number(limitValue)
+const [source,destination,cutoffValue,limitValue='1000',afterTimeValue='0',afterId='']=process.argv.slice(2)
+const cutoff=Number(cutoffValue),limit=Number(limitValue),afterTime=Number(afterTimeValue)
 if(!source||!destination||!Number.isSafeInteger(cutoff)||cutoff<=0||cutoff>=Date.now()/1000||
-  !Number.isInteger(limit)||limit<1||limit>10000){
-  throw new Error('Usage: node tools/archive-local.mjs LOCAL_SQLITE NEW_ARCHIVE CUTOFF_UNIX_SECONDS [LIMIT_1_TO_10000]')
+  !Number.isInteger(limit)||limit<1||limit>10000||!Number.isSafeInteger(afterTime)||afterTime<0||afterTime>=cutoff||
+  !/^[a-zA-Z0-9_-]{0,80}$/.test(afterId)){
+  throw new Error('Usage: node tools/archive-local.mjs LOCAL_SQLITE NEW_ARCHIVE CUTOFF_UNIX_SECONDS [LIMIT_1_TO_10000 [LAST_UPDATED_AT LAST_ORDER_ID]]')
 }
 
 const db=new DatabaseSync(source,{readOnly:true})
@@ -15,16 +16,22 @@ let file
 try {
   const provider=Boolean(db.prepare("SELECT 1 FROM sqlite_schema WHERE name='order_provider_refunds'").get())
   const checkout=Boolean(db.prepare("SELECT 1 FROM sqlite_schema WHERE name='order_checkout_payments'").get())
-  db.exec('CREATE TEMP TABLE selected(id TEXT PRIMARY KEY) WITHOUT ROWID; BEGIN')
+  db.exec('CREATE TEMP TABLE selected(id TEXT PRIMARY KEY,updated_at INTEGER NOT NULL) WITHOUT ROWID; BEGIN')
   db.prepare(`INSERT INTO selected
-    SELECT o.id FROM orders o WHERE o.updated_at<?
+    SELECT o.id,o.updated_at FROM orders o WHERE o.updated_at<? AND (o.updated_at,o.id)>(?,?)
       AND o.status IN('completed','failed','cancelled','rejected')
       AND (o.payment_status IN('void','refunded') OR
         (o.payment_status IN('paid','cash_collected') AND o.reconciled=1))
       AND NOT EXISTS (SELECT 1 FROM cases c WHERE c.order_id=o.id AND c.status='open')
       ${provider?"AND NOT EXISTS(SELECT 1 FROM order_provider_refunds r WHERE r.order_id=o.id AND r.status<>'processed')":''}
-    ORDER BY o.updated_at,o.id LIMIT ?`).run(cutoff,limit)
-  const count=db.prepare('SELECT COUNT(*) count FROM selected').get().count
+    ORDER BY o.updated_at,o.id LIMIT ?`).run(cutoff,afterTime,afterId,limit+1)
+  let count=db.prepare('SELECT COUNT(*) count FROM selected').get().count,next=null
+  if(count>limit){
+    db.exec('DELETE FROM selected WHERE id=(SELECT id FROM selected ORDER BY updated_at DESC,id DESC LIMIT 1)')
+    const last=db.prepare('SELECT updated_at,id FROM selected ORDER BY updated_at DESC,id DESC LIMIT 1').get()
+    next=[last.updated_at,last.id]
+    count--
+  }
   const digest=createHash('sha256')
   file=openSync(temporary,'wx',0o600)
   const record=(data)=>{
@@ -47,7 +54,7 @@ try {
   db.exec('COMMIT')
   // Publish only a complete file, and refuse to replace an existing archive.
   linkSync(temporary,destination)
-  console.log(JSON.stringify({orders:count,cutoff}))
+  console.log(JSON.stringify({orders:count,cutoff,next}))
 } finally {
   if(file!==undefined)closeSync(file)
   db.close()

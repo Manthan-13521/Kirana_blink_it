@@ -7,7 +7,7 @@ import { checkoutCredentials,identifier,paymentCredentials,paymentHoldSeconds,pr
 import type { Credentials,PaymentMode } from './payment-provider'
 import { reserve } from './budget'
 
-type Intent={order_id:string;provider_order_id:string|null;payment_id:string|null;mode:PaymentMode;expires_at:number}
+type Intent={order_id:string;provider_order_id:string|null;payment_id:string|null;mode:PaymentMode;expires_at:number;checkout_config_id:string|null}
 const encoder=new TextEncoder()
 const pendingSql=`o.status='awaiting_payment' AND o.payment_status='unpaid' AND s.accepting=1 AND s.enable_online=1
     AND CASE o.fulfillment WHEN 'delivery' THEN s.enable_delivery WHEN 'pickup' THEN s.enable_pickup ELSE 0 END=1`
@@ -25,16 +25,16 @@ checkoutPayments.post('/orders/:id/payment',async c=>{
     key:credentials.key,orderId:providerOrderId,amount:row.total,currency:'INR',mode:credentials.mode,
   })
   const stored=await one<Intent>(db,'SELECT * FROM order_checkout_payments WHERE order_id=?',row.id)
-  if(stored?.mode&&stored.mode!==credentials.mode)throw new Problem(409,'The payment configuration changed. Start a fresh order after this payment window closes.')
+  if(stored&&(stored.mode!==credentials.mode||stored.checkout_config_id!==credentials.checkoutConfig))throw new Problem(409,'The payment configuration changed. Start a fresh order after this payment window closes.')
   if(stored?.provider_order_id)return details(stored.provider_order_id)
-  const inserted=await statement(db,`INSERT OR IGNORE INTO order_checkout_payments(order_id,mode,expires_at)
-    SELECT o.id,?,? FROM orders o JOIN settings s ON s.id=1 WHERE o.id=? AND ${pendingSql}
+  const inserted=await statement(db,`INSERT OR IGNORE INTO order_checkout_payments(order_id,mode,expires_at,checkout_config_id)
+    SELECT o.id,?,?,? FROM orders o JOIN settings s ON s.id=1 WHERE o.id=? AND ${pendingSql}
     AND NOT EXISTS(SELECT 1 FROM order_payment_links l WHERE l.order_id=o.id AND l.link_id IS NOT NULL)`,
-    credentials.mode,expires,row.id).run()
+    credentials.mode,expires,credentials.checkoutConfig,row.id).run()
   const claimed=await statement(db,`UPDATE order_checkout_payments SET next_create_at=?
-    WHERE order_id=? AND mode=? AND expires_at>? AND next_create_at<=? AND provider_order_id IS NULL
+    WHERE order_id=? AND mode=? AND checkout_config_id IS ? AND expires_at>? AND next_create_at<=? AND provider_order_id IS NULL
       AND EXISTS(SELECT 1 FROM orders o JOIN settings s ON s.id=1 WHERE o.id=? AND ${pendingSql})`,
-    time+12,row.id,credentials.mode,time,time,row.id).run()
+    time+12,row.id,credentials.mode,credentials.checkoutConfig,time,time,row.id).run()
   if(!claimed.meta.changes)throw new Problem(409,'Checkout is being prepared or the payment window has closed. Refresh this order before retrying.')
   if(!await reserve(db,'razorpay-order',1,credentials.mode==='test'?200:1200)){
     throw new Problem(429,'The online payment limit was reached. Try again later.')
@@ -52,11 +52,15 @@ checkoutPayments.post('/orders/:id/payment',async c=>{
   if(!razorOrder){
     // Razorpay treats this receipt as unique, including when a previous response was lost.
     const r=await provider(credentials,'/orders',{
-      method:'POST',body:JSON.stringify({amount:row.total,currency:'INR',receipt:row.id,partial_payment:false}),
+      method:'POST',body:JSON.stringify({amount:row.total,currency:'INR',receipt:row.id,partial_payment:false,
+        ...(credentials.checkoutConfig?{checkout_config_id:credentials.checkoutConfig,
+          notes:{kirana_checkout_config:credentials.checkoutConfig}}:{}),
+      }),
     })
     if(r.ok)razorOrder=await r.json<Entity>()
   }
-  if(!identifier(razorOrder?.id,'order')||razorOrder?.amount!==row.total||razorOrder.currency!=='INR'||razorOrder.receipt!==row.id){
+  if(!identifier(razorOrder?.id,'order')||razorOrder?.amount!==row.total||razorOrder.currency!=='INR'||razorOrder.receipt!==row.id||
+     credentials.checkoutConfig&&razorOrder.notes?.kirana_checkout_config!==credentials.checkoutConfig){
     throw new Problem(503,'Razorpay has not confirmed this order. Retry shortly.')
   }
   const saved=await statement(db,`UPDATE order_checkout_payments SET provider_order_id=? WHERE order_id=?

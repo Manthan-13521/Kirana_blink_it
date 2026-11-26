@@ -1,5 +1,5 @@
 import { flushSync } from 'react-dom'
-import { loadCheckout } from './razorpay-checkout'
+import { checkoutDisplay,loadCheckout } from './razorpay-checkout'
 import type { PaymentChallenge,PaymentProof } from './razorpay-checkout'
 import { lazy,Suspense,useEffect,useMemo,useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
@@ -225,7 +225,7 @@ export function OrderView({orderId,onClose,account,shop,local=false,extra,reorde
       try{
         proof=await new Promise<PaymentProof|null>(resolve=>{
           new Razorpay({key:challenge.key,order_id:challenge.orderId,amount:challenge.amount,currency:challenge.currency,
-            name:shop.name,description:challenge.mode==='test'?'Test order':'Kirana order',
+            name:shop.name,description:challenge.mode==='test'?'Test order':'Kirana order',config:checkoutDisplay(challenge.mode),
             handler:resolve,modal:{ondismiss:()=>resolve(null)}}).open()
         })
       }finally{setPaymentOverlay(false)}

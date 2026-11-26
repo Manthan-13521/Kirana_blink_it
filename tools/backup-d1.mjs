@@ -22,6 +22,7 @@ const run=(script,args,input)=>{
   const result=spawnSync(process.execPath,[script,...args],{input,encoding:'utf8'})
   if(result.error)throw result.error
   assert.equal(result.status,0,result.stderr?.trim()||'Backup command failed.')
+  return result.stdout
 }
 function restore(dump,output){
   const sql=readFileSync(dump,'utf8')
@@ -101,16 +102,30 @@ try{
         run(tool('merchant-backup.mjs'),['decrypt',encrypted,authenticated],passphrase)
         result[binding]=restore(authenticated,sqlite)
         if(binding==='DB'){
-          const archive=join(temp,'settled.ndjson')
           const cutoff=Math.floor(Date.now()/1000)-90*86400
-          run(tool('archive-local.mjs'),[sqlite,archive,String(cutoff),'10000'])
-          const encryptedArchive=join(pending,'settled.ndjson.enc'),checkedArchive=join(temp,'settled-verified.ndjson')
-          run(tool('merchant-backup.mjs'),['encrypt',archive,encryptedArchive],passphrase)
-          run(tool('merchant-backup.mjs'),['decrypt',encryptedArchive,checkedArchive],passphrase)
-          result.settledOrders=(await verifyArchive(checkedArchive)).orders
+          const archive=join(temp,'settled.ndjson'),checked=join(temp,'settled-verified.ndjson')
+          const archives=[]
+          let cursor=[],sum=0
+          do{
+            const index=archives.length+1
+            const name=index===1?'settled.ndjson.enc':`settled-${String(index).padStart(3,'0')}.ndjson.enc`
+            const exported=JSON.parse(run(tool('archive-local.mjs'),[sqlite,archive,String(cutoff),'10000',...cursor.map(String)]))
+            const encryptedArchive=join(pending,name)
+            run(tool('merchant-backup.mjs'),['encrypt',archive,encryptedArchive],passphrase)
+            run(tool('merchant-backup.mjs'),['decrypt',encryptedArchive,checked],passphrase)
+            const {orders}=await verifyArchive(checked)
+            assert.equal(orders,exported.orders)
+            sum+=orders
+            archives.push({file:name,orders})
+            rmSync(archive)
+            rmSync(checked)
+            cursor=exported.next
+          }while(cursor)
+          result.settledOrders=sum
+          result.archives=archives
         }
       }
-      writeFileSync(join(pending,'verified.json'),JSON.stringify({date,verified:['DB','MEDIA','settled'],method:'authenticated decrypt and SQLite integrity check'},null,2),{mode:0o600})
+      writeFileSync(join(pending,'verified.json'),JSON.stringify({date,verified:['DB','MEDIA','settled'],method:'authenticated decrypt and SQLite integrity check',archives:result.archives},null,2),{mode:0o600})
       const published=join(root,date)
       renameSync(pending,published)
       console.log(JSON.stringify({backup:basename(published),results:result}))

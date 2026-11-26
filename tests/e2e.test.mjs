@@ -1,8 +1,10 @@
 import { after, before, test } from 'node:test'
 import assert from 'node:assert/strict'
-import { createHmac } from 'node:crypto'
+import { createHash,createHmac } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
-import { readFile } from 'node:fs/promises'
+import { mkdtemp,readFile,rm,writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { action,harness,login,place,session } from './harness.mjs'
 
 let instance, customer, owner, rider, anonymous
@@ -252,15 +254,46 @@ test('overlapping refund requests cannot exceed captured cash',async()=>{
   assert.equal(record.payment_status,'cash_collected')
 })
 
-test('hosted staging pauses the checkout API even when store settings accept orders',async()=>{
-  const staging=await harness(undefined,{entry:'production',mode:'staging'})
+test('staging authorizes only the designated customer session for COD pickup and delivery',async()=>{
+  const tmp=await mkdtemp(join(tmpdir(),'kirana-preview-fixture-')),file=join(tmp,'sessions.sql')
+  const email='checkout-fixture@gmail.com'
+  const sha=value=>createHash('sha256').update(value).digest('hex')
+  const selected='a'.repeat(64),other='b'.repeat(64),revoked='c'.repeat(64),ownerToken='d'.repeat(64)
+  const rows=[[selected,'demo-customer',sha(email)],[other,'demo-customer',null],[revoked,'demo-customer',sha('previous@gmail.com')],[ownerToken,'demo-owner',sha(email)]]
+  await writeFile(file,`INSERT INTO sessions(hash,account_id,expires_at,staging_checkout) VALUES
+    ${rows.map(([token,account,grant])=>`('${sha(token)}','${account}',unixepoch()+3600,${grant?"'"+grant+"'":'NULL'})`).join(',')};`)
+  let staging
   try{
+    staging=await harness(file,{entry:'production',mode:'staging',vars:{STAGING_CHECKOUT_EMAILS:email}})
     const guest=session(staging.base)
-    assert.equal((await guest('/api/store')).settings.accepting,0)
-    assert.deepEqual(await guest('/api/slots?mode=pickup'),[])
+    const as=token=>(path,options={})=>guest(path,{...options,headers:{...options.headers,Cookie:'kirana_session='+token}})
+    const approved=as(selected)
     const [persisted]=await staging.readBusiness('SELECT accepting FROM settings WHERE id=1')
     assert.equal(persisted.accepting,1)
-  }finally{await staging.stop()}
+    for(const user of [guest,as(other),as(revoked),as(ownerToken)]){
+      assert.equal((await user('/api/store')).settings.accepting,0)
+      assert.deepEqual(await user('/api/slots?mode=pickup'),[])
+    }
+    const store=await approved('/api/store')
+    assert.equal(store.settings.accepting,1)
+    assert.equal(store.settings.enable_online,0)
+    assert.equal(store.local,false)
+    for(const fulfillment of ['pickup','delivery']){
+      const slots=await approved('/api/slots?mode='+fulfillment)
+      const payload={fulfillment,method:'cash',slot:slots[0].start,items:[item('milk')],
+        ...(fulfillment==='delivery'?{addressId:'demo-address'}:{})}
+      await action(as(other),'/quote',payload,503)
+      await action(as(revoked),'/orders',{...payload,key:crypto.randomUUID(),version:'untrusted'},503)
+      const quote=await action(approved,'/quote',payload)
+      const result=await action(approved,'/orders',{...payload,key:crypto.randomUUID(),version:quote.version},201)
+      assert.equal((await approved('/api/orders/'+result.id)).payment_status,'cash_due')
+    }
+    const [orders]=await staging.readBusiness('SELECT COUNT(*) AS count FROM orders')
+    assert.equal(orders.count,2)
+  }finally{
+    await staging?.stop()
+    await rm(tmp,{recursive:true,force:true})
+  }
 })
 
 test('Razorpay webhook replays are scoped to stored test links and exact amounts',async()=>{
