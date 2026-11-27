@@ -20,7 +20,6 @@ async function allocate(){
 export async function harness(seed,{entry='index',mode,vars={}}={}){
   const workspace=await mkdtemp(join(tmpdir(),'kirana-local-test-'))
   const state=join(workspace,'state')
-  const port=await allocate()
   const args=[...config,'--persist-to',state]
   const run=command=>{
     const job=spawnSync(wrangler,[...command,...args],{cwd:workspace,env,encoding:'utf8'})
@@ -53,7 +52,9 @@ export async function harness(seed,{entry='index',mode,vars={}}={}){
     run(['d1','migrations','apply','DB'])
     run(['d1','migrations','apply','MEDIA'])
     if(seed)run(['d1','execute','DB','--file',seed])
-    worker=spawn(wrangler,['dev',...args,'--ip','127.0.0.1','--port',String(port),'--log-level','error'],{cwd:workspace,env,detached:process.platform!=='win32',stdio:['ignore','pipe','pipe']})
+    const port=await allocate()
+    // Let the kernel allocate the inspector port for parallel preview instances.
+    worker=spawn(wrangler,['dev',...args,'--ip','127.0.0.1','--port',String(port),'--inspector-port','0','--log-level','error'],{cwd:workspace,env,detached:process.platform!=='win32',stdio:['ignore','pipe','pipe']})
     let logs=''
     worker.stdout.on('data',data=>{logs=(logs+data).slice(-7000)})
     worker.stderr.on('data',data=>{logs=(logs+data).slice(-7000)})

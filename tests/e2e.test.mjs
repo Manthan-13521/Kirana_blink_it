@@ -271,6 +271,30 @@ test('concurrent final stock and delivery slot cannot oversell or overbook',asyn
   await action(owner,'/admin/settings',settings,200,'PUT')
 })
 
+test('checkout racing a price update preserves stock, invoice prices and the refreshed total',async()=>{
+  const product={sku:'PRICE-RACE',name:'Price race fixture',category:'fresh',unit:'pc',step:1,price:9000,stock:5}
+  const {id}=await action(owner,'/admin/products',product,201)
+  const pickup={fulfillment:'pickup',method:'cash',slot:await available('pickup'),items:[item(id)]}
+  const quote=await action(customer,'/quote',pickup)
+  const submit=action(customer,'/orders',{...pickup,version:quote.version,key:crypto.randomUUID()},201).catch(error=>{
+    assert.match(error.message,/"code":"quote_changed"/)
+    return null
+  })
+  await action(owner,'/admin/products/'+id,{...product,price:11000,mrp:11000},200,'PUT')
+  const result=await submit
+  if(result){
+    const [historical]=await instance.readBusiness('SELECT price,line_total FROM order_items WHERE order_id=?',result.id)
+    assert.equal(historical.price,9000)
+    assert.equal(historical.line_total,quote.total)
+  }
+  assert.equal(await stock(id),result?4:5)
+  await action(customer,'/orders',{...pickup,version:quote.version,key:crypto.randomUUID()},409)
+  const {id:next}=await place(customer,pickup)
+  const [current]=await instance.readBusiness('SELECT price FROM order_items WHERE order_id=?',next)
+  assert.equal(current.price,11000)
+  assert.equal(await stock(id),result?3:4)
+})
+
 test('catalog media create and deletion, stock ledger, reports',async()=>{
   const {id}=await action(owner,'/admin/products',{sku:'MEDIA-001',name:'Image test product',category:'fresh',unit:'pc',step:1,price:2000,stock:3},201)
   const media=await readFile(new URL('../public/catalog/01.webp',import.meta.url))

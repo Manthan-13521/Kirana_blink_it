@@ -1,4 +1,4 @@
-import { useEffect,useState } from 'react'
+import { useEffect,useRef,useState } from 'react'
 import type { FormEvent } from 'react'
 import { Archive,Boxes,FileDown,ImagePlus,PackagePlus,Plus,Search,Trash2,Upload } from 'lucide-react'
 import { api,downloadCsv,message,pack,readCsv,rupee,send,productImage } from './lib'
@@ -83,22 +83,31 @@ export function AdminCatalog({owner}:{owner:boolean}){
 function ProductForm({product,categories,canArchive,close,saved}:{product:Draft;categories:Category[];canArchive:boolean;close:()=>void;saved:(hint:string)=>void}){
   const [value,setValue]=useState(product),[file,setFile]=useState<File|null>(null),[remove,setRemove]=useState(false)
   const [busy,setBusy]=useState(false),[error,setError]=useState(''),[confirmArchive,setConfirmArchive]=useState(false)
+  const savedDetails=useRef<string|undefined>(undefined)
   const change=(key:keyof Product, val:unknown)=>setValue(v=>({...v,[key]:val}))
   const submit=async(e:FormEvent)=>{
     e.preventDefault();setBusy(true);setError('')
+    let savingPhoto=false
     try{
       const image=file?await productImage(file):null
-      let productId=value.id
-      const fields={...value,mrp:value.mrp||value.price}
-      if(productId)await send('/admin/products/'+productId,fields,'PUT')
-      else{
+      const {id,...details}=value
+      let productId=id
+      const fields={...details,mrp:details.mrp||details.price}
+      const submittedDetails=JSON.stringify(fields)
+      if(!productId){
         const created=await send<{id:string}>('/admin/products',fields)
         productId=created.id;setValue(d=>({...d,id:created.id}))
+      }else if(savedDetails.current!==submittedDetails){
+        await send('/admin/products/'+productId,fields,'PUT')
       }
+      savedDetails.current=submittedDetails
+      savingPhoto=Boolean(image)||remove
       if(image)await api('/admin/products/'+productId+'/image',{method:'POST',headers:{'Content-Type':image.type},body:image})
       else if(remove)await api('/admin/products/'+productId+'/image',{method:'DELETE'})
       saved('Product saved.')
-    }catch(e){setError(message(e))}finally{setBusy(false)}
+    }catch(e){
+      setError(savingPhoto?'Product details were saved. The photo could not be updated. '+message(e):message(e))
+    }finally{setBusy(false)}
   }
   const text=(key:keyof Product,label:string,required=false,maxLength=120)=><label>{label}<input value={String(value[key]??'')} onChange={e=>change(key,e.target.value)} maxLength={maxLength} required={required}/></label>
   const num=(key:keyof Product,label:string,min=0,money=false)=><label>{label}<input type="number" min={min} step={money?'0.01':'1'} value={Number(value[key]??0)/(money?100:1)} onChange={e=>change(key,Math.round(Number(e.target.value)*(money?100:1)))} required/></label>

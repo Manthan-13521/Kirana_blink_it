@@ -1,0 +1,9 @@
+# Security review
+
+- Ordinary application-role tests verify private order ownership, rider order scope, owner-only actions, logout/invitation revocation, session isolation, and demo and test-payment exclusion from merchant deployment.
+- OAuth fixtures exercise verified identity, audience, state and nonce, workspace roles, replay handling and authorization after redirect. Existing signed-in owner access was observed in Safari. Hosted rider identity remains pending.
+- Payment fixtures exercise exact-byte signature checks, order/currency/amount matching, duplicate processing, reconciliation and overlapping refunds. Merchant checkout and refund controls remained disabled.
+- Defensive code review focused on prepared statements, bound search input, React text rendering, mutating-request origin checks, limited image formats/sizes, bounded lists, cache scope, Web Push destinations and Worker configuration. No new exploit or intrusive external testing was performed.
+- The benchmark requires isolated D1 bindings, an expiring credential and account quota readings. Its source entry point and route are excluded from merchant release bundles.
+- The repository is public. API credentials, live-session material, real identifiers and database backups stay outside Git. A targeted scan of the working tree and 15 historical commits found no matches for common Google OAuth, live Razorpay key IDs, GitHub token or private-key formats. Rotate the previously exposed secrets. The production dependency audit reported zero known vulnerabilities on the locked dependency set.
+- The deployed OAuth status HTTP response included JSON, `Cache-Control: no-store`, `Referrer-Policy: no-referrer`, `X-Content-Type-Options: nosniff` and `X-Frame-Options: DENY`.
