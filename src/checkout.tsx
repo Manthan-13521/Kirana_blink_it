@@ -217,31 +217,41 @@ export function OrderList({open,active=true}:{open:(id:string)=>void;active?:boo
   const [next,setNext]=useState<string|null>(null)
   const [loading,setLoading]=useState(true)
   const pending=useRef<AbortController|null>(null)
+  const version=useRef('')
   const [paged,setPaged]=useState(false)
-  const load=useCallback(async(cursor?:string)=>{
+  const load=useCallback(async(cursor?:string,silent=false)=>{
+    if(silent&&pending.current)return
     pending.current?.abort()
     const request=new AbortController()
-    pending.current=request;setLoading(true)
+    pending.current=request
+    if(!silent)setLoading(true)
     try{
-      const data=await api<{orders:OrderRow[];next:string|null}>('/orders'+(cursor?'?before='+encodeURIComponent(cursor):''),{signal:request.signal})
+      const q=cursor?'?before='+encodeURIComponent(cursor):silent&&version.current?'?v='+encodeURIComponent(version.current):''
+      const data=await api<{orders:OrderRow[];next:string|null;version?:string}|{unchanged:true}>('/orders'+q,{signal:request.signal})
       if(!request.signal.aborted){
-        setOrders(previous=>cursor?[...previous,...data.orders]:data.orders);setNext(data.next);setPaged(Boolean(cursor));setError('')
+        if(!('unchanged' in data)){
+          version.current=cursor?'':(data.version??'')
+          setOrders(previous=>cursor?[...previous,...data.orders]:data.orders);setNext(data.next);setPaged(Boolean(cursor))
+        }
+        if(!silent)setError('')
       }
-    }catch(e){if(!request.signal.aborted)setError(message(e))}
-    finally{if(!request.signal.aborted)setLoading(false)}
+    }catch(e){if(!silent&&!request.signal.aborted)setError(message(e))}
+    finally{if(pending.current===request)pending.current=null;if(!request.signal.aborted&&!silent)setLoading(false)}
   },[])
   useEffect(()=>{
     if(!active)return
+    version.current=''
     void load()
     return ()=>pending.current?.abort()
   },[active,load])
   const hasOpenOrder=orders.some(order=>!closedOrders.has(order.status))
   useEffect(()=>{
     if(!active||!hasOpenOrder||paged)return
-    const refresh=()=>{if(document.visibilityState==='visible')void load()}
-    const timer=setInterval(refresh,60000)
+    const refresh=()=>{if(document.visibilityState==='visible'&&navigator.onLine)void load(undefined,true)}
+    const timer=setInterval(refresh,30000)
     document.addEventListener('visibilitychange',refresh)
-    return ()=>{clearInterval(timer);document.removeEventListener('visibilitychange',refresh)}
+    window.addEventListener('online',refresh)
+    return ()=>{clearInterval(timer);document.removeEventListener('visibilitychange',refresh);window.removeEventListener('online',refresh)}
   },[active,hasOpenOrder,paged,load])
   return <div className="stack"><ErrorText text={error}/>{loading&&!orders.length?<p>Loading orders…</p>:!orders.length?<Empty title="No orders yet" detail="Your deliveries and pickups will appear here."/>:orders.map(order=><button key={order.id} className="order-row" onClick={()=>open(order.id)}>
     <div><b>{displayOrder(order.id)}</b><small>{timestamp(order.created_at)} · {fulfillmentName(order.fulfillment)}</small></div>
@@ -323,13 +333,18 @@ export function OrderView({orderId,onClose,account,shop,local=false,extra,reorde
     }
   },[windowEnd])
   const checkFull=Boolean(awaitingPayment||order?.refundPending||order?.cases.some(request=>request.status==='open'))
+  const canPoll=account.role==='customer'||account.role==='owner'||account.role==='staff'
   useEffect(()=>{
-    if(account.role!=='customer'||busy||!trackingStatus||(!checkFull&&closedOrders.has(trackingStatus)))return
-    const tick=()=>{if(document.visibilityState==='visible')void refresh(checkFull?undefined:trackingVersion,true)}
-    const timer=setInterval(tick,awaitingPayment&&(verifying||previousPaymentAttempt)?15000:45000)
+    if(!canPoll||busy||!trackingStatus||(!checkFull&&closedOrders.has(trackingStatus)))return
+    const interval=account.role!=='customer'?20000
+      :awaitingPayment&&(verifying||previousPaymentAttempt)||trackingStatus==='out_for_delivery'?15000
+      :closedOrders.has(trackingStatus)?45000:30000
+    const tick=()=>{if(document.visibilityState==='visible'&&navigator.onLine)void refresh(checkFull?undefined:trackingVersion,true)}
+    const timer=setInterval(tick,interval)
     document.addEventListener('visibilitychange',tick)
-    return ()=>{clearInterval(timer);document.removeEventListener('visibilitychange',tick)}
-  },[account.role,awaitingPayment,busy,checkFull,previousPaymentAttempt,refresh,trackingStatus,trackingVersion,verifying])
+    window.addEventListener('online',tick)
+    return ()=>{clearInterval(timer);document.removeEventListener('visibilitychange',tick);window.removeEventListener('online',tick)}
+  },[account.role,canPoll,awaitingPayment,busy,checkFull,previousPaymentAttempt,refresh,trackingStatus,trackingVersion,verifying])
   const operate=async(action:()=>Promise<unknown>,success:string)=>{
     setBusy(true);setError('');setOk('')
     try {await action();setOk(success);await refresh()}catch(e){setError(message(e))}finally{setBusy(false)}

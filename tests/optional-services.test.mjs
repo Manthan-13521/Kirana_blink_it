@@ -206,6 +206,38 @@ test('Google workspaces enforce email-bound team invitations, single rider and r
   assert.equal(sqlite.prepare('SELECT hash FROM sessions WHERE account_id=?').get(activeStaff),undefined)
 })
 
+test('Exact role assignment and safe rider replacement preserve delivery records and block active handoffs',async t=>{
+  const {googleWorkspace,resolveGoogleAccount}=await import('../worker/google-auth.ts')
+  const {sqlite,db}=await integrationFixture(t)
+  const oldRider={sub:'old-rider-sub',email:'old.rider@gmail.com',email_verified:true,name:'Old Rider'}
+  const newRider={sub:'new-rider-sub',email:'manth4050@gmail.com',email_verified:true,name:'New Rider'}
+  const env={DB:db,GOOGLE_OWNER_EMAILS:'manthanjaiswla902@gmail.com',GOOGLE_RIDER_EMAIL:'old.rider@gmail.com'}
+  sqlite.exec("UPDATE accounts SET active=0 WHERE role='rider'")
+  const oldId=await resolveGoogleAccount(env,oldRider,'rider',null)
+  const time=Math.floor(Date.now()/1000)
+  sqlite.prepare(`INSERT INTO orders(id,account_id,request_key,request_fingerprint,channel,fulfillment,status,payment_method,payment_status,
+    subtotal,fees,total,tax,slot_start,slot_end,billing_json,created_at,updated_at,assigned_to)
+    VALUES('delivered-history','demo-customer','hist-1','fp','online','delivery','completed','cash','cash_collected',100,0,100,0,?,?,'{}',?,?,?)`)
+    .run(time+900,time+4500,time,time,oldId)
+  sqlite.prepare('INSERT INTO sessions(hash,account_id,expires_at) VALUES(?,?,?)').run('old-rider-sess',oldId,time+600)
+  const rotated={DB:db,GOOGLE_OWNER_EMAILS:'manthanjaiswla902@gmail.com',GOOGLE_RIDER_EMAIL:'manth4050@gmail.com'}
+  assert.equal(await googleWorkspace(rotated,{sub:'typo',email:'manthanjaiswal902@gmail.com',email_verified:true},'owner',null),'shop')
+  assert.equal(await googleWorkspace(rotated,{sub:'exact',email:'manthanjaiswla902@gmail.com',email_verified:true},'shop',null),'owner')
+  assert.equal(await googleWorkspace(rotated,newRider,'shop',null),'rider')
+  sqlite.prepare(`INSERT INTO orders(id,account_id,request_key,request_fingerprint,channel,fulfillment,status,payment_method,payment_status,
+    subtotal,fees,total,tax,slot_start,slot_end,billing_json,created_at,updated_at,assigned_to)
+    VALUES('active-delivery','demo-customer','act-1','fp','online','delivery','out_for_delivery','cash','cash_due',100,0,100,0,?,?,'{}',?,?,?)`)
+    .run(time+900,time+4500,time,time,oldId)
+  await assert.rejects(resolveGoogleAccount(rotated,newRider,'rider',null),/already assigned/)
+  sqlite.prepare("UPDATE orders SET status='completed',payment_status='cash_collected' WHERE id='active-delivery'").run()
+  const newId=await resolveGoogleAccount(rotated,newRider,'rider',null)
+  assert.notEqual(newId,oldId)
+  assert.equal(sqlite.prepare('SELECT active FROM accounts WHERE id=?').get(oldId).active,0)
+  assert.equal(sqlite.prepare('SELECT active FROM accounts WHERE id=?').get(newId).active,1)
+  assert.equal(sqlite.prepare('SELECT hash FROM sessions WHERE account_id=?').get(oldId),undefined)
+  assert.equal(sqlite.prepare("SELECT assigned_to FROM orders WHERE id='delivered-history'").get().assigned_to,oldId)
+})
+
 test('Google callback directs verified roles from each sign-in entry and enforces dashboard authorization',async t=>{
   const {application}=await import('../worker/app.ts')
   const {resolveGoogleAccount}=await import('../worker/google-auth.ts')

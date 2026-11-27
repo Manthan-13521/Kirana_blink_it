@@ -146,6 +146,21 @@ export async function resolveGoogleAccount(env:Env['Bindings'],profile:Profile,w
   }
   if(account||workspace!=='shop'&&!allowed)throw new Problem(403,'This Google account is not authorized for this workspace.')
   const role=workspace==='shop'?'customer':workspace
+  if(workspace==='rider'&&allowed){
+    const time=now()
+    await db.batch([
+      statement(db,`UPDATE accounts SET active=0 WHERE role='rider' AND active=1
+        AND id IN (SELECT g.account_id FROM google_identities g WHERE g.workspace='rider' AND g.invited=0 AND g.subject<>?)
+        AND NOT EXISTS(SELECT 1 FROM orders WHERE assigned_to=accounts.id AND status='out_for_delivery')`,profile.sub),
+      statement(db,`DELETE FROM sessions WHERE account_id IN (SELECT id FROM accounts WHERE role='rider' AND active=0)`),
+      statement(db,`UPDATE orders SET assigned_to=NULL,route_rank=0,updated_at=?
+        WHERE assigned_to IN (SELECT id FROM accounts WHERE role='rider' AND active=0) AND status IN('accepted','packing','ready')`,time),
+      statement(db,`INSERT INTO audit(actor,action,subject,detail,created_at)
+        SELECT id,'rider.replaced',id,'allowlist',? FROM accounts WHERE role='rider' AND active=0
+          AND id IN (SELECT g.account_id FROM google_identities g WHERE g.workspace='rider' AND g.invited=0 AND g.subject<>?)
+          AND NOT EXISTS(SELECT 1 FROM audit WHERE action='rider.replaced' AND subject=accounts.id)`,time,profile.sub),
+    ])
+  }
   await db.batch([
     statement(db,`INSERT INTO accounts(id,role,name) SELECT ?,?,? WHERE NOT EXISTS
       (SELECT 1 FROM google_identities WHERE subject=? AND workspace=?) ${riderGuard}`,accountId,role,name,profile.sub,workspace),

@@ -29,3 +29,28 @@ export function groupTrips(stops:TripStop[]){
   }
   return groups
 }
+
+export function sameStopSet(a:string[],b:string[]){
+  if(a.length!==b.length)return false
+  const set=new Set(a)
+  return b.every(id=>set.has(id))
+}
+
+export function mergeTripGroups<T extends TripStop&{status:string}>(
+  previous:string[][],
+  activeTrip:string[],
+  stops:T[],
+  canRebatch:boolean,
+){
+  const byId=new Map(stops.map(stop=>[stop.id,stop]))
+  if(canRebatch){
+    const next=groupTrips(stops)
+    const unchanged=next.length===previous.length&&next.every((group,i)=>group.length===previous[i].length&&group.every((id,j)=>id===previous[i][j]))
+    return {groups:unchanged?previous:next,reselect:next[0]&&!sameStopSet(activeTrip,next[0])?next[0]:null}
+  }
+  const existing=previous.map(group=>group.filter(id=>byId.has(id))).filter(group=>group.length)
+  const known=new Set(existing.flat())
+  const added=groupTrips(stops.filter(stop=>!known.has(stop.id)))
+  const unchanged=!added.length&&existing.length===previous.length&&existing.every((group,i)=>group.length===previous[i].length)
+  return {groups:unchanged?previous:[...existing,...added],reselect:null}
+}

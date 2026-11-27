@@ -133,21 +133,24 @@ async function orderHistory(c:Ctx,riderOnly=false){
   const address=rider?",CASE WHEN status NOT IN('completed','failed','cancelled','rejected') THEN address_json END AS address_json":owned?',address_json':''
   const results=await all<Record<string,unknown>>(db,`SELECT ${publicOrderFields},route_rank,assigned_to${address}
     FROM orders ${whereSql} ORDER BY ${orderBy} LIMIT 41`,...params)
+  const items=results.slice(0,40)
+  const version=before?undefined:await digest(JSON.stringify(items.map(r=>[r.id,r.status,r.payment_status,r.updated_at,r.assigned_to,r.reconciled])))
+  if(version&&c.req.query('v')===version)return c.json({unchanged:true})
   const last=results[39]
-  return c.json({orders:results.slice(0,40),next:results.length>40?`${last.created_at}.${last.id}`:null})
+  return c.json({orders:items,next:results.length>40?`${last.created_at}.${last.id}`:null,...(version?{version}:{})})
 }
 orders.get('/orders',c=>orderHistory(c))
 orders.get('/rider/orders',c=>orderHistory(c,true))
 orders.get('/orders/:id',async c=>{
   const account=role(c,'customer','owner','staff','rider'), db=c.env.DB
-  const orderId=c.req.param('id'), previousVersion=account.role==='customer'?c.req.query('tracking'):undefined
+  const orderId=c.req.param('id'), previousVersion=['customer','owner','staff'].includes(account.role)?c.req.query('tracking'):undefined
   const row:(Order&{last_event?:number|null})|null=previousVersion
     ?await one<Order&{last_event:number|null}>(db,`SELECT o.*,(SELECT id FROM order_events WHERE order_id=o.id ORDER BY id DESC LIMIT 1) AS last_event
       FROM orders o WHERE o.id=?`,orderId)
     :await order(db,orderId)
   if(!row)throw new Problem(404,'Order not found.')
   authorizeOrder(account,row)
-  const trackingVersion=(lastEvent:number|null)=>[row.status,row.payment_status,row.updated_at,lastEvent??0].join('.')
+  const trackingVersion=(lastEvent:number|null)=>[row.status,row.payment_status,row.updated_at,row.assigned_to??'',row.reconciled,lastEvent??0].join('.')
   if(previousVersion&&previousVersion===trackingVersion(row.last_event??null))return c.json({unchanged:true})
   const canAccessContact=account.role!=='rider'||!terminal.has(row.status)
   const [items,events,cases,refunds,pendingRefunds,paymentAttempt]=await Promise.all([

@@ -583,3 +583,70 @@ test('a fulfillment switch races safely with checkout and preserves pending paym
     assert.equal(await stock('chips'),counterBefore-settled.length*90)
   }finally{await action(owner,'/admin/settings',baseline,200,'PUT')}
 })
+
+test('versioned polling endpoints return unchanged until order or summary state mutates',async()=>{
+  const list=await owner('/api/orders')
+  assert.ok(list.version)
+  assert.deepEqual(await owner('/api/orders?v='+encodeURIComponent(list.version)),{unchanged:true})
+  const summary=await owner('/api/admin/summary?days=1')
+  assert.ok(summary.version)
+  assert.deepEqual(await owner('/api/admin/summary?days=1&v='+encodeURIComponent(summary.version)),{unchanged:true})
+  const sale=await place(owner,pos([item('chips')]))
+  const updatedList=await owner('/api/orders?v='+encodeURIComponent(list.version))
+  assert.ok(updatedList.orders.some(row=>row.id===sale.id))
+  const updatedSummary=await owner('/api/admin/summary?days=1&v='+encodeURIComponent(summary.version))
+  assert.equal(updatedSummary.metrics.walk_in,summary.metrics.walk_in+1)
+})
+
+test('complete five-customer connected lifecycle synchronizes status, inventory, cash and invoices',async()=>{
+  const baseline=await owner('/api/admin/settings')
+  await action(owner,'/admin/settings',{...baseline,open_hour:0,close_hour:24,preparation:0,delivery_capacity:25},200,'PUT')
+  try{
+    const {id:productId}=await action(owner,'/admin/products',{sku:'FIVE-STOP-1',name:'Connected 5-stop pack',category:'fresh',unit:'pc',step:1,price:4500,stock:20},201)
+    const slot=await available('delivery')
+    const pins=[
+      [17.41694,78.41768],[17.41951,78.42982],[17.40906,78.43454],[17.40512,78.42115],[17.41485,78.40985],
+    ]
+    const buyers=[],orderIds=[]
+    const initialRoute=await rider('/api/rider/route')
+    for(const [i,[latitude,longitude]] of pins.entries()){
+      const buyer=session(instance.base)
+      await action(buyer,'/auth/register-local',{name:'Five Stop Customer '+(i+1),phone:'987654321'+i})
+      const address=await action(buyer,'/addresses',{label:'Home',recipient:'Five Stop Customer '+(i+1),phone:'987654321'+i,line1:'House '+(i+1),locality:'Banjara Hills',pin:'500034',latitude,longitude},201)
+      assert.equal(address.serviceable,true)
+      const placed=await place(buyer,{fulfillment:'delivery',method:'cash',slot,addressId:address.id,items:[item(productId,1)]})
+      buyers.push(buyer)
+      orderIds.push(placed.id)
+    }
+    const ownerOrders=await owner('/api/orders?status=placed')
+    for(const orderId of orderIds)assert.ok(ownerOrders.orders.some(row=>row.id===orderId))
+    for(const orderId of orderIds){
+      await state(owner,orderId,'accepted')
+      await state(owner,orderId,'packing')
+      await state(owner,orderId,'ready')
+      await action(owner,'/orders/'+orderId+'/assign')
+    }
+    const assigned=await rider('/api/rider/route?v='+encodeURIComponent(initialRoute.version))
+    assert.equal(assigned.orders.length,5)
+    for(const orderId of orderIds)assert.ok(assigned.orders.some(stop=>stop.id===orderId))
+    for(const [i,orderId] of orderIds.entries()){
+      const buyer=buyers[i]
+      const before=await buyer('/api/orders/'+orderId)
+      await state(rider,orderId,'out_for_delivery')
+      const outCustomer=await buyer('/api/orders/'+orderId+'?tracking='+encodeURIComponent(before.trackingVersion))
+      assert.equal(outCustomer.status,'out_for_delivery')
+      assert.equal((await owner('/api/orders/'+orderId)).status,'out_for_delivery')
+      await state(rider,orderId,'completed',{cash:before.total})
+      const doneCustomer=await buyer('/api/orders/'+orderId+'?tracking='+encodeURIComponent(outCustomer.trackingVersion))
+      assert.equal(doneCustomer.status,'completed')
+      assert.equal(doneCustomer.payment_status,'cash_collected')
+      assert.ok(doneCustomer.invoice&&doneCustomer.items.length===1)
+      assert.equal((await owner('/api/orders/'+orderId)).status,'completed')
+      await action(owner,'/orders/'+orderId+'/reconcile')
+      assert.equal((await owner('/api/orders/'+orderId)).reconciled,1)
+    }
+    assert.equal(await stock(productId),15)
+    assert.equal((await rider('/api/rider/route')).orders.length,0)
+    assert.equal((await rider('/api/rider/route')).summary.cash,0)
+  }finally{await action(owner,'/admin/settings',baseline,200,'PUT')}
+})

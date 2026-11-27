@@ -12,7 +12,7 @@ const links=[
   {id:'setup',label:'Store settings',icon:Settings2},{id:'team',label:'Team access',icon:Users},
 ] as const
 type Tab=typeof links[number]['id']
-type Summary={metrics:Record<string,number>;low:{id:string;name:string;stock:number;threshold:number;unit:string;expiry:string|null}[];refunds:number;cases:number}
+type Summary={metrics:Record<string,number>;low:{id:string;name:string;stock:number;threshold:number;unit:string;expiry:string|null}[];refunds:number;cases:number;version?:string}
 
 export function OwnerDashboard({account,shop,refreshShop}:{account:Account;shop:Shop;refreshShop:()=>Promise<void>}){
   const [tab,setTab]=useState<Tab>('overview'),[error,setError]=useState(''),[orderId,setOrder]=useState<string|null>(null),[revision,setRevision]=useState(0)
@@ -36,7 +36,29 @@ export function OwnerDashboard({account,shop,refreshShop}:{account:Account;shop:
 
 function Overview({name,navigate,revision,owner}:{name:string;navigate:(tab:Tab)=>void;revision:number;owner:boolean}){
   const [summary,setSummary]=useState<Summary|null>(null),[error,setError]=useState('')
-  useEffect(()=>{api<Summary>('/admin/summary').then(setSummary,e=>setError(message(e)))},[revision])
+  const version=useRef(''),inFlight=useRef<AbortController|null>(null)
+  useEffect(()=>{
+    const load=async(silent=false)=>{
+      if(silent&&inFlight.current)return
+      inFlight.current?.abort()
+      const request=new AbortController()
+      inFlight.current=request
+      try{
+        const q=silent&&version.current?'?v='+encodeURIComponent(version.current):''
+        const data=await api<Summary|{unchanged:true}>('/admin/summary'+q,{signal:request.signal})
+        if(request.signal.aborted)return
+        if(!('unchanged' in data)){version.current=data.version??'';setSummary(data)}
+        if(!silent)setError('')
+      }catch(e){if(!silent&&!request.signal.aborted)setError(message(e))}
+      finally{if(inFlight.current===request)inFlight.current=null}
+    }
+    void load()
+    const refresh=()=>{if(document.visibilityState==='visible'&&navigator.onLine)void load(true)}
+    const timer=setInterval(refresh,20000)
+    document.addEventListener('visibilitychange',refresh)
+    window.addEventListener('online',refresh)
+    return ()=>{clearInterval(timer);document.removeEventListener('visibilitychange',refresh);window.removeEventListener('online',refresh);inFlight.current?.abort()}
+  },[revision])
   const m=summary?.metrics
   const [capacity,setCapacity]=useState<{name:string;used:number|null;limit:number;warning:boolean}[]|null>(null)
   const refreshCapacity=async()=>{
@@ -77,24 +99,33 @@ function Metric({label,value,accent}:{label:string;value:string|number;accent:st
 
 function AdminOrders({open,revision}:{open:(id:string)=>void;revision:number}){
   const [status,setStatus]=useState('all'),[rows,setRows]=useState<OrderRow[]>([]),[next,setNext]=useState<string|null>(null),[error,setError]=useState('')
-  const paging=useRef(false),inFlight=useRef<AbortController|null>(null)
-  const load=async(cursor?:string)=>{
+  const paging=useRef(false),inFlight=useRef<AbortController|null>(null),version=useRef('')
+  const load=async(cursor?:string,silent=false)=>{
+    if(silent&&(paging.current||inFlight.current))return
     paging.current=Boolean(cursor)
     inFlight.current?.abort()
     const request=new AbortController()
     inFlight.current=request
-    try{const p=new URLSearchParams({status,...(cursor?{before:cursor}:{})});const data=await api<{orders:OrderRow[];next:string|null}>('/orders?'+p,{signal:request.signal})
+    try{
+      const p=new URLSearchParams({status,...(cursor?{before:cursor}:silent&&version.current?{v:version.current}:{})})
+      const data=await api<{orders:OrderRow[];next:string|null;version?:string}|{unchanged:true}>('/orders?'+p,{signal:request.signal})
       if(request.signal.aborted)return
-      setRows(old=>cursor?[...old,...data.orders]:data.orders);setNext(data.next)
-      setError('')
-    }catch(e){if(!request.signal.aborted)setError(message(e))}
+      if(!('unchanged' in data)){
+        version.current=cursor?'':(data.version??'')
+        setRows(old=>cursor?[...old,...data.orders]:data.orders);setNext(data.next)
+      }
+      if(!silent)setError('')
+    }catch(e){if(!silent&&!request.signal.aborted)setError(message(e))}
+    finally{if(inFlight.current===request)inFlight.current=null}
   }
   useEffect(()=>{
+    version.current=''
     void load()
-    const refresh=()=>{if(!paging.current&&document.visibilityState==='visible')void load()}
-    const timer=setInterval(refresh,60000)
+    const refresh=()=>{if(!paging.current&&document.visibilityState==='visible'&&navigator.onLine)void load(undefined,true)}
+    const timer=setInterval(refresh,15000)
     document.addEventListener('visibilitychange',refresh)
-    return ()=>{clearInterval(timer);document.removeEventListener('visibilitychange',refresh);inFlight.current?.abort()}
+    window.addEventListener('online',refresh)
+    return ()=>{clearInterval(timer);document.removeEventListener('visibilitychange',refresh);window.removeEventListener('online',refresh);inFlight.current?.abort()}
   },[status,revision])
   return <section className="stack"><Heading title="Orders" detail="Fulfill online orders and reconcile collections." action={<button className="button secondary" onClick={()=>void load()}>Refresh</button>}/>
     <label className="inline-field">Status<select value={status} onChange={e=>setStatus(e.target.value)}>{['all','awaiting_payment','placed','accepted','packing','ready','out_for_delivery','completed','cancelled','rejected','failed'].map(s=><option key={s} value={s}>{pretty(s)}</option>)}</select></label>

@@ -6,7 +6,7 @@ import { api,displayOrder,message,pretty,rupee,send,windowLabel } from './lib'
 import type { Account,Address,OrderDetail,OrderRow,Shop } from './lib'
 import { useRiderLocation,useTurn } from './rider-progress'
 import { gap,goodAccuracy } from './rider-motion'
-import { coordinates,groupTrips } from './rider-trips'
+import { coordinates,mergeTripGroups,sameStopSet } from './rider-trips'
 import type { TripStop } from './rider-trips'
 import { Empty,ErrorText,Heading,Status,Success } from './ui'
 
@@ -85,7 +85,7 @@ export function RiderDashboard({account,shop,local}:{account:Account;shop:Shop;l
   useEffect(()=>{
     if(opening||busy)return
     const refresh=()=>{if(document.visibilityState==='visible'&&navigator.onLine)void load(false)}
-    const timer=setInterval(refresh,route?.summary.active?45000:120000)
+    const timer=setInterval(refresh,route?.summary.active?15000:20000)
     document.addEventListener('visibilitychange',refresh)
     window.addEventListener('online',refresh)
     return ()=>{clearInterval(timer);document.removeEventListener('visibilitychange',refresh);window.removeEventListener('online',refresh)}
@@ -93,14 +93,12 @@ export function RiderDashboard({account,shop,local}:{account:Account;shop:Shop;l
 
   useEffect(()=>{
     if(!activeStops)return
-    setGroups(previous=>{
-      const existing=previous.map(group=>group.filter(id=>byId.has(id))).filter(group=>group.length)
-      const known=new Set(existing.flat())
-      const added=groupTrips(activeStops.filter(stop=>!known.has(stop.id)))
-      if(!added.length&&existing.length===previous.length&&existing.every((group,i)=>group.length===previous[i].length))return previous
-      return [...existing,...added]
-    })
-  },[activeStops,byId])
+    const onFirstTrip=!activeTrip.length||(groups[0]&&sameStopSet(activeTrip,groups[0]))
+    const canRebatch=!tracking&&!changedOrder&&Boolean(onFirstTrip)&&(!activeTrip.length||activeTrip.every(id=>byId.get(id)?.status==='ready'))
+    const merged=mergeTripGroups(groups,activeTrip,activeStops,canRebatch)
+    if(merged.groups!==groups)setGroups(merged.groups)
+    if(merged.reselect)selectTrip(merged.reselect)
+  },[activeStops,byId,tracking,changedOrder,activeTrip,groups])
 
   async function calculate(input:Trip){
     currentRequest.current?.abort()

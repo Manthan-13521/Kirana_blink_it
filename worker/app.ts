@@ -228,7 +228,10 @@ export function application(localRoutes?:Hono<Env>) {
     ])
     const alerts=new Map([...expiry,...lowStock].map(row=>[row.id,row]))
     const low=Array.from(alerts.values()).slice(0,20)
-    return c.json({metrics,low,refunds:refunds?.refunds??0,cases:cases?.count??0})
+    const payload={metrics,low,refunds:refunds?.refunds??0,cases:cases?.count??0}
+    const version=await digest(JSON.stringify(payload))
+    if(c.req.query('v')===version)return c.json({unchanged:true})
+    return c.json({...payload,version})
   })
   api.get('/admin/report',async c=>{
     role(c,'owner','staff')
