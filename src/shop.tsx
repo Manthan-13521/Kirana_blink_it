@@ -10,11 +10,11 @@ const shapes=['#e6eddb','#f1e5d3','#f9e7be','#f1e2d9','#e2e9e2']
 function photo(product:Product){
   return product.image?<img src={product.image} alt="" width={240} height={180} loading="lazy" decoding="async"/>:<ShoppingBasket size={36}/>
 }
-function Quantity({count,onChange,name,disabled=false,min=1,max=100}:{count:number;onChange:(amount:number)=>void;name:string;disabled?:boolean;min?:number;max?:number}){
+function Quantity({count,onChange,name,disabled=false,cartReady,min=1,max=100}:{count:number;onChange:(amount:number)=>void;name:string;disabled?:boolean;cartReady:boolean;min?:number;max?:number}){
   return count?<div className="quantity"><button aria-label={'Remove '+name} onClick={()=>onChange(count<=min?0:count-1)}><Minus size={14}/></button><b>{count}</b><button aria-label={'Increase '+name} disabled={count>=max} onClick={()=>onChange(count+1)}><Plus size={14}/></button></div>
-    :<button className="add-button" disabled={disabled} onClick={()=>onChange(min)} aria-label={(disabled?'Out of stock: ':'Add ')+name}>{disabled?'Sold out':<>Add <Plus size={15}/></>}</button>
+    :<button className="add-button" disabled={disabled||!cartReady} onClick={()=>onChange(min)} aria-label={(disabled?'Out of stock: ':'Add ')+name}>{disabled?'Sold out':<>Add <Plus size={15}/></>}</button>
 }
-export function ProductCard({product,count,change,open}:{product:Product;count:number;change:(count:number)=>void;open:()=>void}){
+function ProductCard({product,count,cartReady,change,open}:{product:Product;count:number;cartReady:boolean;change:(count:number)=>void;open:()=>void}){
   const savings=product.mrp>product.price?Math.floor((product.mrp-product.price)*100/product.mrp):0
   const max=Math.min(product.max_steps,Math.floor(product.stock/product.step))
   return <article className="product-card">
@@ -23,16 +23,16 @@ export function ProductCard({product,count,change,open}:{product:Product;count:n
       <small>{pack(product.unit,product.step)}</small>
       <button type="button" className="product-name" onClick={open}>{product.name}</button>
       <div className="product-bottom"><div><strong>{rupee(product.price)}</strong>{product.mrp>product.price&&<del>{rupee(product.mrp)}</del>}</div>
-      <Quantity count={count} onChange={change} name={product.name} disabled={max<product.min_steps} min={product.min_steps} max={max}/></div>
+      <Quantity count={count} onChange={change} name={product.name} disabled={max<product.min_steps} cartReady={cartReady} min={product.min_steps} max={max}/></div>
     </div>
   </article>
 }
 type Props={
-  shop:Shop; refreshShop:()=>Promise<void>; account:Account|null; query:string; setQuery:(v:string)=>void
-  cart:CartLine[]; setCart:(lines:CartLine[])=>void; cartOpen:boolean; startCheckout:boolean; openCart:(open:boolean)=>void
+  shop:Shop|null; refreshShop:()=>Promise<void>; account:Account|null; query:string; setQuery:(v:string)=>void
+  cart:CartLine[]; cartReady:boolean; setCart:(lines:CartLine[])=>void; cartOpen:boolean; startCheckout:boolean; openCart:(open:boolean)=>void
   requireLogin:()=>void; openOrder:(order:string)=>void; setLocation:()=>void
 }
-export function Storefront({shop,refreshShop,account,query,setQuery,cart,setCart,cartOpen,startCheckout,openCart,requireLogin,openOrder,setLocation}:Props){
+export function Storefront({shop,refreshShop,account,query,setQuery,cart,cartReady,setCart,cartOpen,startCheckout,openCart,requireLogin,openOrder,setLocation}:Props){
   const [categories,setCategories]=useState<Category[]>([])
   const [active,setActive]=useState('')
   const [browseAll,setBrowseAll]=useState(false),[loadingMore,setLoadingMore]=useState(false)
@@ -84,6 +84,8 @@ export function Storefront({shop,refreshShop,account,query,setQuery,cart,setCart
     requestAnimationFrame(()=>document.getElementById('products')?.scrollIntoView({behavior:'smooth',block:'start'}))
   }
   const reset=()=>{setQuery('');setActive('');setSub('');setBrowseAll(true)}
+  // Fetch the public catalog in parallel with store settings, then render with the live settings.
+  if(!shop)return null
   return <>
     {(active||query)&&<nav className="category-strip" aria-label="Categories">
       <div className="shell strip-inner">
@@ -117,7 +119,7 @@ export function Storefront({shop,refreshShop,account,query,setQuery,cart,setCart
         <ErrorText text={error}/>
         {loading&&!catalog.length?<div className="product-grid" aria-label="Loading products">{[0,1,2,3,4].map(i=><div className="skeleton" key={i}/>)}</div>
           :!catalog.length&&!error?<Empty title="No products found" detail="Try another product name or browse a category." action={<button className="button secondary" onClick={reset}><Search size={16}/> Browse all</button>}/>
-          :<div className="product-grid">{catalog.map(p=><ProductCard key={p.id} product={p} count={cart.find(l=>l.product.id===p.id)?.steps??0} change={n=>change(p,n)} open={()=>setSelected(p)}/>)}</div>}
+          :<div className="product-grid">{catalog.map(p=><ProductCard key={p.id} product={p} count={cart.find(l=>l.product.id===p.id)?.steps??0} cartReady={cartReady} change={n=>change(p,n)} open={()=>setSelected(p)}/>)}</div>}
         {next&&<button className="button secondary load-more" disabled={loading||loadingMore} onClick={async()=>{
           const request=new AbortController()
           nextRequest.current=request;setLoadingMore(true)
@@ -143,8 +145,8 @@ export function Storefront({shop,refreshShop,account,query,setQuery,cart,setCart
           </button>)}
         </div>}
       </>}
-      <p>{selected.description}</p><div className="summary-line"><strong>{rupee(selected.price)}</strong><Quantity name={selected.name} count={cart.find(l=>l.product.id===selected.id)?.steps??0} onChange={n=>change(selected,n)} min={selected.min_steps} max={Math.min(selected.max_steps,Math.floor(selected.stock/selected.step))} disabled={selected.stock<selected.step*selected.min_steps}/></div>
+      <p>{selected.description}</p><div className="summary-line"><strong>{rupee(selected.price)}</strong><Quantity name={selected.name} count={cart.find(l=>l.product.id===selected.id)?.steps??0} onChange={n=>change(selected,n)} cartReady={cartReady} min={selected.min_steps} max={Math.min(selected.max_steps,Math.floor(selected.stock/selected.step))} disabled={selected.stock<selected.step*selected.min_steps}/></div>
     </Sheet>}
-    {cartOpen&&<Cart shop={shop} refreshShop={refreshShop} account={account} startAtCheckout={startCheckout} cart={cart} change={change} onClose={()=>openCart(false)} requireLogin={requireLogin} complete={oid=>{setCart([]);openCart(false);openOrder(oid)}}/>}
+    {cartReady&&cartOpen&&<Cart shop={shop} refreshShop={refreshShop} account={account} startAtCheckout={startCheckout} cart={cart} change={change} onClose={()=>openCart(false)} requireLogin={requireLogin} complete={oid=>{setCart([]);openCart(false);openOrder(oid)}}/>}
   </>
 }

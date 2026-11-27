@@ -31,8 +31,25 @@ try {
       page.setDefaultTimeout(12000)
       const errors = []
       page.on('pageerror', error => errors.push(error.name))
+      const catalogRequested = Promise.withResolvers()
+      const restoreBasket = Promise.withResolvers()
+      if (name === 'budget-android') {
+        await page.route('**/api/store', async route => { await catalogRequested.promise; await route.continue() })
+        await page.route('**/api/me', async route => { await restoreBasket.promise; await route.continue() })
+        await page.route(/\/api\/catalog\?featured=1$/, async route => {
+          catalogRequested.resolve()
+          await route.continue()
+        })
+      }
       await page.goto(local.base)
       await page.locator('.product-card').first().waitFor()
+      if (name === 'budget-android') {
+        const add = page.locator('.add-button').filter({ hasText: 'Add' }).first()
+        assert.equal(await add.isDisabled(), true)
+        restoreBasket.resolve()
+        await page.waitForFunction(() => document.querySelector('.add-button:not(:disabled)'))
+        report('parallel storefront startup', 'local Android Chromium', { result: 'pass', basketWaitedForSession: true })
+      }
       if (evidence && (name === 'desktop' || name === 'budget-android'))
         await page.screenshot({ path: join(evidence, name + '-storefront.png') })
       const search = page.getByRole('textbox', { name: 'Search groceries' })

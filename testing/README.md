@@ -26,6 +26,10 @@ Use the **existing isolated benchmark Worker** and its two synthetic databases. 
 
 After the candidate endurance ends and enough UTC-day quota is available, renew the benchmark credential as above. Use a scoped Cloudflare Analytics Read token with `node tools/quota-report.mjs ACCOUNT_ID kirana-benchmark-staging-api > PRIVATE_QUOTA.json`. The file must be less than one minute old when passing it to `node tests/hosted-benchmark.mjs NEW_CLIENT target PRIVATE_QUOTA.json`. Supply the scoped token or `KIRANA_WRANGLER_OAUTH_CONFIG` to this process so it can refresh analytics during the test. The harness reserves available fulfillment windows before placing orders, reconciles simulated delivery cash and checks database invariants before and after. Use a new evidence file for each test run.
 
+## Hosted latency diagnosis
+
+Use an expendable `kirana-latency-` Pages project with ten random hexadecimal suffix characters. Copy `testing/latency-probe.js` to its asset directory as `_worker.js`, bind `API` to the isolated benchmark Worker and bind `DB` to its synthetic orders database. Set `PROBE_SHA256` to the hexadecimal SHA-256 of the existing synthetic benchmark token and `PROBE_UNTIL` to an expiry in epoch milliseconds within 30 minutes. Never point these bindings to merchant resources. Run `node testing/hosted-latency.mjs PRIVATE_BENCHMARK_CLIENT PRIVATE_PAGES_PROBE` using curl 7.83 or newer with HTTP/2 and a Pages JSON file containing `url`. The runner records network phases and timing fields without credentials, raw IPs or response bodies. Remove the temporary Pages project after the measurements.
+
 ## Acceptance records
 
 - [27 November sanitized measurements](evidence/2026-11-27.json)

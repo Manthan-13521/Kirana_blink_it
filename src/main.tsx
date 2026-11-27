@@ -167,9 +167,8 @@ function App(){
   }
   const currentRole=view==='owner'?'owner':view==='rider'?'rider':'customer'
   const allowed=view==='shop'||(view==='owner'&&['owner','staff'].includes(account?.role??''))||(view==='rider'&&account?.role==='rider')
-  if(!shop)return <div className="shell startup"><Mark/><ErrorText text={error}/>{!error&&<p>Opening the store…</p>}</div>
-  return <div style={{'--brand':shop.brand_color} as React.CSSProperties}>
-    <div className="topbar"><div className="shell top-inner"><span><Store size={13}/> {!shop.accepting?'Online ordering is temporarily unavailable':local?'Local demo store':'Your neighbourhood grocery'}</span>
+  return <div style={shop?{'--brand':shop.brand_color} as React.CSSProperties:undefined}>
+    {shop?<><div className="topbar"><div className="shell top-inner"><span><Store size={13}/> {!shop.accepting?'Online ordering is temporarily unavailable':local?'Local demo store':'Your neighbourhood grocery'}</span>
     </div></div>
     <header className="main-header"><div className="shell header-inner">
       <button className="brand-button" onClick={()=>go('shop')} aria-label={shop.name+' storefront'}><Mark name={shop.name} logo={shop.logo}/></button>
@@ -184,10 +183,10 @@ function App(){
         {view==='shop'&&<button className="basket-button" aria-label={'My basket'+(cartCount?', '+cartCount+' items':'')} onClick={()=>openCart(true)}><ShoppingBasket size={20}/><span>{cartCount?rupee(cartValue):'My basket'}</span>{cartCount>0&&<b>{cartCount}</b>}</button>}
       </div>
     </div></header>
-    <ErrorText text={error}/>
-    {view==='shop'?<Storefront shop={shop} refreshShop={refreshShop} account={account} query={query} setQuery={setQuery} cart={cart} setCart={changeCart} cartOpen={cartOpen} startCheckout={resumeCheckout} openCart={open=>{setResumeCheckout(false);openCart(open)}}
+    <ErrorText text={error}/></>:<div className="shell startup"><Mark/><ErrorText text={error}/>{!error&&<p>Opening the store…</p>}</div>}
+    {view==='shop'?<Storefront shop={shop} refreshShop={refreshShop} account={account} query={query} setQuery={setQuery} cart={cart} cartReady={ready} setCart={changeCart} cartOpen={cartOpen} startCheckout={resumeCheckout} openCart={open=>{setResumeCheckout(false);openCart(open)}}
       requireLogin={()=>{checkoutIntent.current=true;openCart(false);signIn('customer')}} openOrder={openCustomerOrder} setLocation={()=>setModal('location')}/>
-      :view==='orders'?<main className="shell my-orders stack">
+      :!shop?null:view==='orders'?<main className="shell my-orders stack">
         <div className="heading"><div><h1>My orders</h1><p>Review purchases and track deliveries and pickups.</p></div>
           <button className="button secondary" onClick={()=>go('shop')}>Go to storefront</button></div>
         {!ready?<p>Loading your account…</p>:account?.role==='customer'?<OrderList active={!order} open={openCustomerOrder}/>:<Empty
@@ -198,9 +197,9 @@ function App(){
       </main>:<Suspense fallback={<main className="shell startup"><p>Loading workspace…</p></main>}>{view==='owner'?<Owner account={account} shop={shop} refreshShop={refreshShop}/>:<Rider account={account} shop={shop}/>}</Suspense>}
     {modal==='signin'&&<SignIn role={loginRole} local={local} checkout={checkoutIntent.current} close={()=>{checkoutIntent.current=false;setModal(null)}} signed={signed}/>}
     {modal==='profile'&&account&&<Profile account={account} setAccount={setAccount} local={local} close={()=>setModal(null)} logOut={()=>void logOut()} orders={()=>go('orders')} addresses={()=>setModal('location')} switchRole={()=>signIn(currentRole)}/>}
-    {modal==='location'&&<Location shop={shop} account={account} onClose={()=>setModal(null)} signIn={()=>signIn('customer')}/>}
+    {shop&&modal==='location'&&<Location shop={shop} account={account} onClose={()=>setModal(null)} signIn={()=>signIn('customer')}/>}
     {modal==='notices'&&account&&<Notices customer={account?.role==='customer'} local={local} close={()=>setModal(null)} open={id=>{if(account.role==='customer')openCustomerOrder(id);else{setModal(null);setOrder(id)}}}/>}
-    {order&&account&&(view!=='orders'||account.role==='customer')&&<OrderView key={order} local={local} orderId={order} onClose={closeOrder} account={account} shop={shop} reorder={account.role==='customer'?async items=>{await reorder(items);go('shop');openCart(true)}:undefined}/>}
+    {shop&&order&&account&&(view!=='orders'||account.role==='customer')&&<OrderView key={order} local={local} orderId={order} onClose={closeOrder} account={account} shop={shop} reorder={account.role==='customer'?async items=>{await reorder(items);go('shop');openCart(true)}:undefined}/>}
   </div>
 }
 
