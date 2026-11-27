@@ -256,7 +256,7 @@ tbody tr+tr{border-top:1px solid #edf0e7}
  .product-grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:7px}.product-info{padding:7px}.product-photo{height:111px}.product-name{font-size:12px}.product-bottom strong{font-size:14px}.product-bottom del{margin-left:2px;font-size:9px}
  .add-button{padding:5px 6px;font-size:11px}.quantity button{width:23px}
  .mobile-cart{position:fixed;z-index:5;left:14px;right:14px;bottom:12px;background:var(--brand);color:#fff;border:0;border-radius:10px;padding:11px;display:flex!important;align-items:center;gap:7px;font-size:13px;box-shadow:0 5px 23px #172e2655}.mobile-cart b{margin-left:auto;display:flex;gap:5px;align-items:center}
- .shop-footer{padding-bottom:64px}
+ .shop-footer{padding-bottom:84px}
  .dashboard{display:flex;flex-direction:column;gap:12px;padding-top:12px}.dashboard-nav{display:flex;overflow:auto;width:100%}.sidebar-label{display:none}.dashboard-nav button{padding:7px;font-size:12px}
  .console-hero{padding:16px;border-radius:12px;align-items:start;flex-direction:column}.console-hero h1{font-size:33px}.console-hero p{font-size:12px}
  .dashboard-pair{grid-template-columns:1fr}.metric-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.rider-metrics{grid-template-columns:repeat(3,minmax(0,1fr))}.metric{padding:8px}.metric span{font-size:10px}
