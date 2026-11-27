@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
-import { execFileSync } from 'node:child_process'
+import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'
+import { assertTargetHeadroom, readQuota, targetLimits, targetWriteBudget, validateQuota } from '../testing/benchmark-quota.mjs'
 
-const [configPath,mode='smoke',quotaPath]=process.argv.slice(2)
-assert.ok(configPath&&['smoke','target','browse'].includes(mode),'Usage: node tests/hosted-benchmark.mjs PRIVATE_CONFIG [smoke|browse|target FRESH_QUOTA_JSON]')
+const [configPath,mode='smoke',quotaPath,progressPath]=process.argv.slice(2)
+assert.ok(configPath&&['smoke','target','browse'].includes(mode),'Usage: node tests/hosted-benchmark.mjs PRIVATE_CONFIG [smoke|browse|target FRESH_QUOTA_JSON [NEW_PROGRESS_JSONL]]')
 const config=JSON.parse(readFileSync(configPath,'utf8'))
 const url=new URL(config.url)
 assert.match(url.hostname,/^kirana-benchmark-staging-api\.[a-z0-9-]+\.workers\.dev$/)
@@ -11,25 +11,11 @@ assert.equal(url.protocol,'https:')
 assert.equal(url.origin,config.url)
 assert.match(config.token,/^[a-f0-9]{64}$/)
 const target=mode==='target',browseOnly=mode==='browse',counts=target?{online:800,pos:300,sku:5000,width:32,visits:8}:browseOnly?{online:0,pos:0,sku:180,width:32,visits:8}:{online:30,pos:12,sku:180,width:6,visits:3}
-const maxWrites=target?76000:5000
+const maxWrites=target?targetWriteBudget:5000
 let quota, initialQuota
-function validateQuota(value) {
-  assert.equal(value.utcDay,new Date().toISOString().slice(0,10),'Use the measured account quota for the current UTC day.')
-  assert.ok(Math.abs(Date.now()-Date.parse(value.asOf))<60000,'Refresh account quota analytics first.')
-  for(const key of ['d1RowsWritten','d1RowsRead','workerRequests'])
-    assert.ok(Number.isSafeInteger(value[key]?.value)&&value[key].value>=0,'Invalid quota metric '+key)
-  return value
-}
-function readQuota() {
-  const env={...process.env}
-  if(!env.CLOUDFLARE_API_TOKEN&&env.KIRANA_WRANGLER_OAUTH_CONFIG){
-    execFileSync(process.execPath,['node_modules/wrangler/bin/wrangler.js','whoami'],{encoding:'utf8',timeout:20000})
-    const oauth=readFileSync(env.KIRANA_WRANGLER_OAUTH_CONFIG,'utf8')
-    env.CLOUDFLARE_API_TOKEN=oauth.match(/^oauth_token\s*=\s*"([^"]+)"/m)?.[1]
-  }
-  assert.ok(env.CLOUDFLARE_API_TOKEN,'Set the account analytics token or local Wrangler OAuth config path.')
-  return validateQuota(JSON.parse(execFileSync(process.execPath,['tools/quota-report.mjs',config.account,'kirana-benchmark-staging-api'],
-    {encoding:'utf8',env,timeout:20000})))
+if(progressPath)writeFileSync(progressPath,'',{flag:'wx',mode:0o600})
+const record=(event,data={})=>{
+  if(progressPath)appendFileSync(progressPath,JSON.stringify({at:new Date().toISOString(),event,...data})+'\n')
 }
 if(target){
   assert.ok(quotaPath,'Provide a fresh account quota report.')
@@ -37,23 +23,27 @@ if(target){
   assert.match(config.account??'',/^[a-f0-9]{32}$/)
   assert.ok(Date.parse(config.expiresAt)-Date.now()>15*60000,'Refresh the isolated benchmark credential.')
   assert.equal(config.unseededWrites,0,'Wait for seed writes to settle in the account analytics.')
-  initialQuota=quota=readQuota()
-  for(const [key,reserve,limit] of [['d1RowsWritten',maxWrites,90000],['d1RowsRead',1000000,3500000],['workerRequests',30000,70000]])
-    assert.ok(Math.max(quota[key].value,submitted[key].value)+reserve<limit,'Insufficient account headroom for '+key)
+  initialQuota=quota=readQuota(config.account)
+  assertTargetHeadroom(quota,submitted)
+  record('admitted',{quota,revision:config.commit})
 }
 
 let writes=0,reads=0,statements=0,requests=0,errors=0
+const completed={online:0,counter:0,delivery:0,simulatedPayments:0,cashReconciled:0,trackingChecks:0}
 const times=[],byEndpoint=new Map()
 let halted=false
 function checkBudget(){
   assert.ok(!halted,'Benchmark has stopped admitting requests.')
   assert.ok(writes+(target?512:0)<maxWrites,'Synthetic D1 write budget reached.')
   if(!target)return
-  if(Date.now()-Date.parse(quota.asOf)>=60000)quota=readQuota()
+  if(Date.now()-Date.parse(quota.asOf)>=60000){
+    quota=readQuota(config.account)
+    record('checkpoint',{quota,completed,requests,reads,writes,statements,errors})
+  }
   assert.equal(quota.utcDay,initialQuota.utcDay,'Quota day changed.')
-  for(const [key,used,reserve,limit] of [
-    ['d1RowsWritten',writes,1024,90000],['d1RowsRead',reads,16000,3500000],['workerRequests',requests,128,70000],
-  ])assert.ok(Math.max(quota[key].value,initialQuota[key].value+used)+reserve<limit,'Account safety budget reached for '+key)
+  for(const [key,used,reserve] of [
+    ['d1RowsWritten',writes,1024],['d1RowsRead',reads,16000],['workerRequests',requests,128],
+  ])assert.ok(Math.max(quota[key].value,initialQuota[key].value+used)+reserve<targetLimits[key],'Account safety budget reached for '+key)
 }
 function client(){
   let cookie=''
@@ -62,8 +52,9 @@ function client(){
     const headers={Authorization:'Bearer '+config.token, ...(cookie?{Cookie:cookie}:{}),
       ...(method==='GET'?{}:{Origin:config.url}),...(data===undefined?{}:{'Content-Type':type??'application/json'})}
     const start=performance.now()
-    const response=await fetch(url.origin+path,{method,headers,signal:AbortSignal.timeout(15000),
-      body:type?data:data===undefined?undefined:JSON.stringify(data)})
+    requests++
+    const response=await fetch(url.origin+path,{method,headers,redirect:'error',signal:AbortSignal.timeout(15000),
+      body:type?data:data===undefined?undefined:JSON.stringify(data)}).catch(error=>{errors++;throw error})
     const set=response.headers.get('set-cookie')
     if(set)cookie=set.split(';',1)[0]
     const metric=response.headers.get('x-kirana-d1')
@@ -71,7 +62,6 @@ function client(){
       const counts=JSON.parse(metric)
       reads+=counts.reads;writes+=counts.writes;statements+=counts.statements
     }
-    requests++
     const value=response.headers.get('content-type')?.includes('application/json')?await response.json():new Uint8Array(await response.arrayBuffer())
     const elapsed=performance.now()-start
     times.push(elapsed)
@@ -110,6 +100,13 @@ function reserveWindows(windows,count){
   })
 }
 async function sales(){
+  const pickup=await guest('/api/slots?mode=pickup'),delivery=await guest('/api/slots?mode=delivery')
+  const mix=Array.from({length:counts.online+counts.pos},(_,position)=>{
+    if(position%3===0&&position/3<counts.pos)return 'counter'
+    return position%13===1?'delivery':'pickup'
+  })
+  const pickupSlots=reserveWindows(pickup,mix.filter(mode=>mode==='pickup').length)
+  const deliverySlots=reserveWindows(delivery,mix.filter(mode=>mode==='delivery').length)
   await post(owner,'/auth/demo',{role:'owner'})
   await post(rider,'/auth/demo',{role:'rider'})
   const before=(await owner('/api/admin/summary?days=2')).metrics
@@ -121,13 +118,6 @@ async function sales(){
       line1:'Synthetic lane',locality:'Hyderabad fixture',landmark:'',pin:'500034',latitude:17.413,longitude:78.421},201)
     return {call,addressId:address.id}
   }))
-  const pickup=await guest('/api/slots?mode=pickup'),delivery=await guest('/api/slots?mode=delivery')
-  const mix=Array.from({length:counts.online+counts.pos},(_,position)=>{
-    if(position%3===0&&position/3<counts.pos)return 'counter'
-    return position%13===1?'delivery':'pickup'
-  })
-  const pickupSlots=reserveWindows(pickup,mix.filter(mode=>mode==='pickup').length)
-  const deliverySlots=reserveWindows(delivery,mix.filter(mode=>mode==='delivery').length)
   let nextPickup=0,nextDelivery=0
   let task=0
   async function sale(position,shopper){
@@ -149,17 +139,42 @@ async function sales(){
     const {id}=await post(call,online?'/orders':'/pos',{...checkout,key:crypto.randomUUID(),version:quote.version},201)
     if(online){
       const move=(actor,status,more={})=>post(actor,'/orders/'+id+'/state',{status,...more})
-      if(method==='online')await post(call,'/orders/'+id+'/test-payment',{result:'paid'})
+      if(method==='online'){
+        await post(call,'/orders/'+id+'/test-payment',{result:'paid'})
+        completed.simulatedPayments++
+      }
       await move(owner,'accepted')
       if(drops)await post(owner,'/orders/'+id+'/assign')
       await move(owner,'packing')
       await move(owner,'ready')
       if(drops)await move(rider,'out_for_delivery')
       await move(drops?rider:owner,'completed',method==='cash'?{cash:quote.total}:{})
-      if(drops&&method==='cash')await post(owner,'/orders/'+id+'/reconcile')
+      if(drops){
+        completed.delivery++
+        if(method==='cash'){
+          await post(owner,'/orders/'+id+'/reconcile')
+          completed.cashReconciled++
+        }
+      }
+      if(target&&position%8===0){
+        const tracked=await call('/api/orders/'+id)
+        assert.equal(tracked.status,'completed')
+        assert.equal((await call('/api/orders/'+id+'?tracking='+encodeURIComponent(tracked.trackingVersion))).unchanged,true)
+        completed.trackingChecks++
+      }
     }
+    completed[online?'online':'counter']++
+    if((completed.online+completed.counter)%50===0)record('sales',{completed,requests,reads,writes,statements,errors})
   }
-  await Promise.all(shoppers.map(async shopper=>{while(task<counts.online+counts.pos)await sale(task++,shopper)}))
+  const outcomes=await Promise.allSettled(shoppers.map(async shopper=>{
+    try{while(!halted&&task<counts.online+counts.pos)await sale(task++,shopper)}
+    catch(error){halted=true;throw error}
+  }))
+  const failure=outcomes.find(outcome=>outcome.status==='rejected')
+  if(failure){
+    record('stopped',{completed,requests,reads,writes,statements,errors})
+    throw failure.reason
+  }
   const after=(await owner('/api/admin/summary?days=2')).metrics
   assert.equal(after.online_orders-before.online_orders,counts.online)
   assert.equal(after.walk_in-before.walk_in,counts.pos)
@@ -179,7 +194,8 @@ if(finalIntegrity){
   assert.equal(finalIntegrity.counter-startingIntegrity.counter,counts.pos)
   assert.equal(finalIntegrity.pending,0)
   assert.ok(finalIntegrity.minStock>=0)
-  for(const field of ['badTotals','duplicateCompletions','paymentMismatch'])
+  assert.equal(startingIntegrity.stockUnits-finalIntegrity.stockUnits,6*(counts.online+counts.pos))
+  for(const field of ['badTotals','duplicateCompletions','paymentMismatch','cashUnreconciled'])
     assert.equal(finalIntegrity[field],startingIntegrity[field])
 }
 const elapsed=performance.now()-start
@@ -190,5 +206,7 @@ const percentiles=samples=>{
 }
 const endpoints=Object.fromEntries([...byEndpoint].map(([endpoint,samples])=>
   [endpoint,{requests:samples.length,...percentiles(samples)}]))
-console.log(JSON.stringify({...counts,catalog,requests,errors,...percentiles(times),elapsed_ms:Math.round(elapsed),
-  endpoints,d1:{reads,writes,statements},...(target?{startingIntegrity,finalIntegrity,initialQuota,finalQuota:readQuota()}: {})}))
+const result={...counts,catalog,requests,errors,completed,...percentiles(times),elapsed_ms:Math.round(elapsed),
+  endpoints,d1:{reads,writes,statements},...(target?{startingIntegrity,finalIntegrity,initialQuota,finalQuota:readQuota(config.account)}: {})}
+record('complete',result)
+console.log(JSON.stringify(result))

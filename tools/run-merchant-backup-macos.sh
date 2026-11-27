@@ -17,4 +17,10 @@ if [ -L backup.key ] || [ ! -f backup.key ] ||
   exit 1
 fi
 
-exec "$node_path" tools/maintenance.mjs store.json worker.json backups --backup-only < backup.key
+if "$node_path" tools/maintenance.mjs store.json worker.json backups --backup-only < backup.key; then
+  exit 0
+else
+  result=$?
+  /usr/bin/logger -t kirana-backup 'Kirana encrypted backup failed. Check the protected backup error log.'
+  exit "$result"
+fi

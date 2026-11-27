@@ -24,11 +24,12 @@ export default {
     }
     if(request.method==='GET'&&path==='/api/__benchmark/integrity'){
       const results=await env.DB.batch([
-        env.DB.prepare('SELECT COUNT(*) AS skus,COALESCE(MIN(stock),0) AS minStock FROM products WHERE active=1'),
+        env.DB.prepare('SELECT COUNT(*) AS skus,COALESCE(MIN(stock),0) AS minStock,COALESCE(SUM(stock),0) AS stockUnits FROM products WHERE active=1'),
         env.DB.prepare(`SELECT SUM(status='completed' AND channel='online') AS online,
           SUM(status='completed' AND channel='pos') AS counter,
           SUM(status='awaiting_payment') AS pending,
-          SUM(status='completed' AND payment_status NOT IN ('paid','cash_collected','refunded')) AS paymentMismatch
+          SUM(status='completed' AND payment_status NOT IN ('paid','cash_collected','refunded')) AS paymentMismatch,
+          SUM(status='completed' AND fulfillment='delivery' AND payment_status='cash_collected' AND reconciled=0) AS cashUnreconciled
           FROM orders`),
         env.DB.prepare(`SELECT COUNT(*) AS badTotals FROM orders o WHERE o.subtotal<>(
           SELECT COALESCE(SUM(i.line_total),0) FROM order_items i WHERE i.order_id=o.id

@@ -20,7 +20,8 @@ const path=join(root,'.maintenance.sqlite')
 closeSync(openSync(path,'a',0o600))
 const lock=new DatabaseSync(path)
 const passphrase=readFileSync(0)
-const stamp=new Date().toISOString().slice(0,10)
+// India's overnight backup runs before UTC midnight. Deduplicate by the store's calendar day.
+const stamp=new Date().toLocaleDateString('sv-SE',{timeZone:'Asia/Kolkata'})
 function once(name,script,args,input){
   const done=join(root,stamp+'-'+name+'.done')
   if(existsSync(done))return
