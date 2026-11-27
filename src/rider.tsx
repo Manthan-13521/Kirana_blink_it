@@ -212,15 +212,15 @@ export function RiderDashboard({account,shop,local}:{account:Account;shop:Shop;l
       <button className="button secondary" onClick={()=>void load()}>Refresh assignments <ArrowRight size={16}/></button></div>
     <ErrorText text={error}/><Success text={ok}/>
     {route&&route.summary.active>route.orders.length&&<p>Showing the first {route.orders.length} assignments. More appear as you complete stops.</p>}
-    {route?.orders.length?<div className="panel rider-nav">
-      <div className="rider-trip-bar">
+    {route?<div className="panel rider-nav">
+      {route.orders.length>0&&<div className="rider-trip-bar">
         <label>Delivery trip <select value={activeTrip.length?0:-1} disabled={tracking||planBusy||busy}
           onChange={event=>selectTrip(grouped[Number(event.target.value)])}>
           {!activeTrip.length&&<option value={-1}>No pinned stops</option>}
           {grouped.map((group,i)=><option value={i} key={group.join(',')}>{i===0?'Current trip':'Queued trip '+i} · {i===0?activeTrip.length:group.length} stops</option>)}
         </select></label>
         <span>{grouped.length} {grouped.length===1?'trip':'trips'} · {route.orders.length} assigned</span>
-      </div>
+      </div>}
       {next&&<div className="rider-turn" aria-live="polite">
         <Navigation size={22}/><div>
           <strong>{direction.instruction||(planBusy?'Finding your route…':'Open the delivery pin')}</strong>
@@ -240,7 +240,7 @@ export function RiderDashboard({account,shop,local}:{account:Account;shop:Shop;l
         }}><LocateFixed size={22}/></button>}
 
       </div>
-      <div className="rider-sheet">
+      {route.orders.length>0?<div className="rider-sheet">
         {next&&<div className="rider-sheet-main">
           <div className="rider-customer"><small>Next delivery · {activeTrip.length} left in this trip</small>
             <strong>{next.address?.recipient||displayOrder(next.id)}</strong>
@@ -270,8 +270,8 @@ export function RiderDashboard({account,shop,local}:{account:Account;shop:Shop;l
 
           </div>
         </details>
-      </div>
-    </div>:<div className="panel"><Empty title="No active stops" detail="Ready orders assigned by the owner will appear here."/></div>}
+      </div>:<Empty title="No active stops" detail="Ready orders assigned by the owner will appear here."/>}
+    </div>:!error&&<p role="status">Loading assignments…</p>}
     <details className="panel rider-assignments"><summary>Assignments and history</summary>
     {shownOrder.length>0&&<Heading title="Stops in this trip"/>}
     {(shownOrder.length>0||noPin.length>0)&&<div className="stop-list">

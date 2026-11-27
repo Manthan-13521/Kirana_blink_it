@@ -157,6 +157,8 @@ try{
           assert.equal((await read(rider,id)).address,null)
         }
         await page.getByText('No active stops',{exact:true}).waitFor()
+        assert.equal(await page.getByRole('region',{name:'Interactive delivery map'}).count(),1)
+        assert.equal(await page.getByRole('button',{name:'Start delivery',exact:true}).count(),0)
         assert.equal(summary.routes,1)
         summary.completed=3
       }
