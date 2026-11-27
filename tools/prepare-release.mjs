@@ -73,6 +73,7 @@ const configWriter=(file,value)=>writeFile(join(root,file),JSON.stringify(value,
 await Promise.all([
   writeFile(join(root,'worker','initialize-store.sql'),seed),
   configWriter('worker/wrangler.json',{name:workerName,main:'worker/production.ts',compatibility_date:'2026-10-01',workers_dev:false,
+    observability:{enabled:true,logs:{enabled:true,invocation_logs:false}},
     vars:{APP_MODE:mode,...paymentVars,...(googleOrigin?{GOOGLE_ORIGIN:googleOrigin}:{}),...(staticMediaOrigin?{MEDIA_STATIC_ORIGIN:staticMediaOrigin}:{})},preview_urls:false,
     d1_databases:[{binding:'DB',database_id:ids[0],database_name:config.slug+'-orders',migrations_dir:'migrations'},{binding:'MEDIA',database_id:ids[1],database_name:config.slug+'-media',migrations_dir:'media-migrations'}],
     triggers:{crons:['*/10 * * * *']}}),

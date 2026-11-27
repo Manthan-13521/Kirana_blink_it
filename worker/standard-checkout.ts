@@ -176,20 +176,26 @@ async function reconcilePayment(c:Ctx,access:'owner'|'customer',id:string){
 checkoutPayments.post('/admin/orders/:id/payment/reconcile',c=>reconcilePayment(c,'owner',c.req.param('id')))
 checkoutPayments.post('/orders/:id/payment/reconcile',c=>reconcilePayment(c,'customer',c.req.param('id')))
 
+async function recordWebhookCapture(db:D1Database,payment:Entity,mode:PaymentMode,time:number,eventTime?:number){
+  const applied=await applyCapturedPayment(db,payment,mode,time,eventTime)
+  // Keep provider IDs, body bytes, signatures and customer data out of telemetry.
+  console.info({event:'razorpay.capture.webhook',mode,applied})
+}
+
 export async function applyStandardEvent(db:D1Database,event:PaymentEvent,credentials:Credentials,time=now()){
   const kind=event.event??'',payment=event.payload?.payment?.entity,razorOrder=event.payload?.order?.entity
   if(kind==='payment.captured'){
-    if(payment)await applyCapturedPayment(db,payment,credentials.mode,time,event.created_at)
+    if(payment)await recordWebhookCapture(db,payment,credentials.mode,time,event.created_at)
     return true
   }
   if(kind==='order.paid'){
     if(payment&&(!razorOrder||razorOrder.id===payment.order_id)){
-      await applyCapturedPayment(db,payment,credentials.mode,time,event.created_at)
+      await recordWebhookCapture(db,payment,credentials.mode,time,event.created_at)
     }else if(!payment&&identifier(razorOrder?.id,'order')&&razorOrder?.currency==='INR'&&razorOrder?.status==='paid'&&
       await one(db,'SELECT 1 FROM order_checkout_payments WHERE provider_order_id=? AND mode=? AND payment_id IS NULL',razorOrder.id,credentials.mode)){
       const captured=await fetchCapturedPayment(credentials,razorOrder.id)
       if(!captured)throw new Problem(503,'Razorpay payment reconciliation is pending.')
-      await applyCapturedPayment(db,captured,credentials.mode,time,event.created_at)
+      await recordWebhookCapture(db,captured,credentials.mode,time,event.created_at)
     }
     return true
   }

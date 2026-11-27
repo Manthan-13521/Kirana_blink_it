@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdtempSync,readFileSync,readdirSync,rmSync,writeFileSync,existsSync } from 'node:fs'
+import { mkdirSync,mkdtempSync,readFileSync,readdirSync,rmSync,writeFileSync,existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -82,6 +82,22 @@ test('settled archive and authenticated database recovery preserve financial rec
     assert.equal(receipt.refunds[0].amount,5000)
     assert.notEqual(command('tools/backup-d1.mjs',['invoice',encryptedArchive,invoice,'order-0']).status,0)
     assert.notEqual(command('tools/backup-d1.mjs',['invoice',encryptedArchive,path('invalid-invoice.json'),'unresolved']).status,0)
+    const bundle=path('dated-backup'),bundledInvoice=path('bundled-invoice.json')
+    mkdirSync(bundle)
+    const pages=[{file:'settled.ndjson.enc',orders:550},{file:'settled-002.ndjson.enc',orders:550}]
+    const manifest=join(bundle,'verified.json')
+    writeFileSync(manifest,JSON.stringify({archives:pages}))
+    assert.equal(backup('encrypt',firstPath,join(bundle,pages[0].file)).status,0)
+    assert.equal(backup('encrypt',lastPath,join(bundle,pages[1].file)).status,0)
+    const lateOrder=lines.map(JSON.parse).filter(value=>value.table==='orders').at(-1).row.id
+    assert.equal(command('tools/backup-d1.mjs',['invoice',bundle,bundledInvoice,lateOrder]).status,0)
+    const fromBundle=JSON.parse(readFileSync(bundledInvoice,'utf8'))
+    assert.equal(fromBundle.order.id,lateOrder)
+    assert.equal(fromBundle.order.total,5000)
+    const failedInvoice=path('missing-page-invoice.json')
+    rmSync(join(bundle,pages[1].file))
+    assert.notEqual(command('tools/backup-d1.mjs',['invoice',bundle,failedInvoice,'order-0']).status,0)
+    assert.ok(!existsSync(failedInvoice))
     const bytes=readFileSync(encrypted);bytes[40]^=1
     writeFileSync(path('tampered.enc'),bytes)
     assert.notEqual(backup('decrypt',path('tampered.enc'),path('tampered.sqlite')).status,0)

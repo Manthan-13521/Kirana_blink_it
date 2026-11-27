@@ -556,6 +556,7 @@ test('signed capture confirms a disconnected shopper order once and immediately 
   assert.equal(original.status,'awaiting_payment')
   assert.equal(original.payment_status,'unpaid')
   assert.equal((await ownerQueue()).orders.length,0)
+  const captures=t.mock.method(console,'info',()=>{})
   const webhook=async(event,status,amount,valid=true)=>{
     const body=JSON.stringify({event,payload:{payment:{entity:{id:'pay_disconnected1',order_id:providerOrder,currency:'INR',status,amount}}}})
     const signature=createHmac('sha256',env.RAZORPAY_WEBHOOK_SECRET).update(body).digest('hex')
@@ -568,6 +569,8 @@ test('signed capture confirms a disconnected shopper order once and immediately 
   assert.equal((await ownerQueue()).orders.length,0)
   assert.equal((await webhook('payment.captured','captured',4300)).status,200)
   assert.equal((await webhook('order.paid','captured',4300)).status,200)
+  assert.deepEqual(captures.mock.calls.map(call=>call.arguments),[false,true,false].map(applied=>
+    [{event:'razorpay.capture.webhook',mode:'live',applied}]))
   const confirmed=await shopper('/orders/'+id+'?tracking='+original.trackingVersion)
   assert.equal(confirmed.status,'placed')
   assert.equal(confirmed.payment_status,'paid')

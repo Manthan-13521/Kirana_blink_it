@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import { createReadStream } from 'node:fs'
 import { createInterface } from 'node:readline'
 import { spawnSync } from 'node:child_process'
-import { chmodSync,mkdirSync,mkdtempSync,readFileSync,renameSync,rmSync,writeFileSync } from 'node:fs'
+import { chmodSync,lstatSync,mkdirSync,mkdtempSync,readFileSync,renameSync,rmSync,writeFileSync } from 'node:fs'
 import { basename,join,resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { DatabaseSync } from 'node:sqlite'
@@ -11,7 +11,7 @@ import { DatabaseSync } from 'node:sqlite'
 const [mode,source,destination,orderId]=process.argv.slice(2)
 assert.ok(['backup','verify','invoice'].includes(mode)&&source&&destination&&
   (mode!=='invoice'||typeof orderId==='string'&&/^[a-zA-Z0-9_-]{1,80}$/.test(orderId)),
-  'Usage: node tools/backup-d1.mjs backup WRANGLER_CONFIG BACKUP_DIR OR verify ENCRYPTED_BACKUP RESTORE_DIR OR invoice ENCRYPTED_ARCHIVE NEW_JSON ORDER_ID. Passphrase via stdin.')
+  'Usage: node tools/backup-d1.mjs backup WRANGLER_CONFIG BACKUP_DIR OR verify ENCRYPTED_BACKUP RESTORE_DIR OR invoice ENCRYPTED_ARCHIVE_OR_BACKUP_DIR NEW_JSON ORDER_ID. Passphrase via stdin.')
 const passphrase=readFileSync(0)
 assert.ok(passphrase.toString().trimEnd().length>=16,'Use a merchant-held passphrase of at least 16 characters.')
 const temp=mkdtempSync(join(tmpdir(),'kirana-d1-backup-'))
@@ -67,14 +67,44 @@ async function verifyArchive(file){
   assert.equal(header?.format,'kirana-local-archive-v1')
   assert.equal(header.orders,orders)
   assert.equal(JSON.parse(previous).sha256,hash.digest('hex'))
-  return {orders,receipt}
+  return {orders,cutoff:header.cutoff,receipt}
 }
+
+function archiveName(index){
+  return index===1?'settled.ndjson.enc':`settled-${String(index).padStart(3,'0')}.ndjson.enc`
+}
+
+async function invoiceFromBackup(source){
+  const input=resolve(source),dump=join(temp,'verified.ndjson')
+  const directory=lstatSync(input).isDirectory()
+  const pages=directory?JSON.parse(readFileSync(join(input,'verified.json'),'utf8')).archives:[null]
+  assert.ok(Array.isArray(pages)&&pages.length>0&&pages.length<=1000,'Invalid backup archive manifest.')
+  let found,cutoff
+  for(const [index,page] of pages.entries()){
+    if(directory){
+      assert.equal(page?.file,archiveName(index+1),'Unexpected backup archive filename.')
+      assert.ok(Number.isSafeInteger(page.orders)&&page.orders>=0&&page.orders<=10000,'Invalid backup order count.')
+    }
+    const path=page?join(input,page.file):input
+    assert.ok(lstatSync(path).isFile(),'Expected a regular encrypted archive file.')
+    run(tool('merchant-backup.mjs'),['decrypt',path,dump],passphrase)
+    const archive=await verifyArchive(dump)
+    rmSync(dump)
+    if(page)assert.equal(archive.orders,page.orders,'Backup archive count mismatch.')
+    cutoff??=archive.cutoff
+    assert.equal(archive.cutoff,cutoff,'Backup pages have different archive cutoffs.')
+    if(archive.receipt.order){
+      assert.ok(!found,'Order appears more than once in this backup.')
+      found=archive.receipt
+    }
+  }
+  return found
+}
+
 try{
   if(mode==='invoice'){
-    const dump=join(temp,'verified.ndjson')
-    run(tool('merchant-backup.mjs'),['decrypt',resolve(source),dump],passphrase)
-    const {receipt}=await verifyArchive(dump)
-    assert.ok(receipt.order,'Order is absent from this verified archive.')
+    const receipt=await invoiceFromBackup(source)
+    assert.ok(receipt,'Order is absent from this verified archive.')
     writeFileSync(root,JSON.stringify(receipt,null,2)+'\n',{flag:'wx',mode:0o600})
     console.log('Verified historical invoice exported.')
   }else if(mode==='verify'){
@@ -108,7 +138,7 @@ try{
           let cursor=[],sum=0
           do{
             const index=archives.length+1
-            const name=index===1?'settled.ndjson.enc':`settled-${String(index).padStart(3,'0')}.ndjson.enc`
+            const name=archiveName(index)
             const exported=JSON.parse(run(tool('archive-local.mjs'),[sqlite,archive,String(cutoff),'10000',...cursor.map(String)]))
             const encryptedArchive=join(pending,name)
             run(tool('merchant-backup.mjs'),['encrypt',archive,encryptedArchive],passphrase)

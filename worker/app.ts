@@ -24,7 +24,8 @@ export function application(localRoutes?:Hono<Env>) {
   app.onError((err,c)=>{
     const problem=err instanceof Problem?err:errorMap(err)
     if(problem) return c.json({error:problem.message,code:problem.code},problem.status)
-    console.error('Request failed',err)
+    if(c.env.APP_MODE==='local')console.error('Request failed',err)
+    else console.error({event:'kirana.request.failed'})
     return c.json({error:'Something went wrong. Please try again.'},500)
   })
   app.use('*',async(c,next)=>{
