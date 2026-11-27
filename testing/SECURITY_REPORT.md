@@ -1,7 +1,7 @@
 # Security review
 
 - Ordinary application-role tests verify private order ownership, rider order scope, owner-only actions, logout/invitation revocation, session isolation, and demo and test-payment exclusion from merchant deployment.
-- OAuth fixtures exercise verified identity, audience, state and nonce, workspace roles, replay handling and authorization after redirect. Existing signed-in owner access was observed in Safari. Hosted rider identity remains pending.
+- OAuth fixtures exercise verified identity, audience, state and nonce, workspace roles, replay handling and authorization after redirect. Existing signed-in owner access was observed in Safari. The three authenticated roles completed a private hosted COD delivery. The rider-only endpoint regression covers cross-tab account switching.
 - Payment fixtures exercise exact-byte signature checks, order/currency/amount matching, duplicate processing, reconciliation and overlapping refunds. Merchant checkout and refund controls remained disabled.
 - Defensive code review focused on prepared statements, bound search input, React text rendering, mutating-request origin checks, limited image formats/sizes, bounded lists, cache scope, Web Push destinations and Worker configuration. No new exploit or intrusive external testing was performed.
 - The benchmark requires isolated D1 bindings, an expiring credential and account quota readings. Its source entry point and route are excluded from merchant release bundles.

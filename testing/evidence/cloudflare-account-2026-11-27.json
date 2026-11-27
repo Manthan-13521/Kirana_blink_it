@@ -1,0 +1,40 @@
+{
+  "measuredAt": "2026-11-27T11:22:58.257Z",
+  "sizes": {
+    "totalBytes": 9072640,
+    "dbCount": 8,
+    "merchantBusinessBytes": 479232,
+    "merchantMediaBytes": 69632
+  },
+  "pagesProjects": 5,
+  "scheduledTriggers": [
+    "*/10 * * * *"
+  ],
+  "quota": {
+    "utcDay": "2026-11-27",
+    "asOf": "2026-11-27T11:22:56.788Z",
+    "sampling": "Cloudflare analytics may lag or be sampled.",
+    "d1RowsRead": {
+      "value": 279568,
+      "limit": 5000000,
+      "warning": false
+    },
+    "d1RowsWritten": {
+      "value": 47264,
+      "limit": 100000,
+      "warning": false
+    },
+    "workerRequests": {
+      "value": 13664,
+      "limit": 100000,
+      "warning": false
+    },
+    "worker": {
+      "name": "kirana-benchmark-staging-api",
+      "requests": 12927,
+      "errors": 0,
+      "cpuP50Us": 1753,
+      "cpuP99Us": 6777
+    }
+  }
+}

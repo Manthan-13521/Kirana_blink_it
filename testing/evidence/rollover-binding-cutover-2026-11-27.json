@@ -1,0 +1,17 @@
+{
+  "startedAt": "2026-11-27T11:26:52.601Z",
+  "completedAt": "2026-11-27T11:27:23.561Z",
+  "fixtureOrders": 2,
+  "authenticatedProbe": true,
+  "verified": [
+    "source snapshot",
+    "candidate binding deployment",
+    "original version rollback",
+    "financial and stock snapshot equality",
+    "foreign key integrity",
+    "ordering disabled"
+  ],
+  "dataWrites": 0,
+  "merchantDatabasesTouched": false,
+  "temporaryWorkerRemoved": true
+}

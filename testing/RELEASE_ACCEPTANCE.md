@@ -1,6 +1,6 @@
 # Commercial release acceptance
 
-**Verdict FAIL for commercial launch.** Hosted target capacity and latency, post-rotation Razorpay replay, and production rollover remain open. Public checkout, live payment initiation and live refunds are disabled.
+The [commercial release report](../FINAL_COMMERCIAL_RELEASE_REPORT.md) is the current decision and operator checklist. The checkpoints below preserve prior evidence.
 
 ## Latency investigation follow-up
 
