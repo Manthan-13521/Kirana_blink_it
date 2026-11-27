@@ -1,0 +1,584 @@
+{
+  "recordedAt": "2026-11-27T06:14:58.971Z",
+  "applicationRevision": "3369af01d56655884e8812652c79eb154a785b9e",
+  "regression": {
+    "passed": 38,
+    "failed": 0,
+    "queryPlans": 28,
+    "knownDependencyVulnerabilities": 0
+  },
+  "localWorkloads": [
+    {
+      "catalog_skus": 5000,
+      "online_completed": 800,
+      "counter_completed": 300,
+      "home_deliveries": 60,
+      "seconds": 47.32,
+      "requests": 24989,
+      "p50_ms": 64.8,
+      "p95_ms": 140.96,
+      "p99_ms": 182.71,
+      "max_ms": 252.52,
+      "error_rate": 0,
+      "errors": 0,
+      "peak": {
+        "shoppers": 32,
+        "online_orders": 200,
+        "counter_orders": 75,
+        "requests": 6337,
+        "p50_ms": 119.99,
+        "p95_ms": 175.8,
+        "p99_ms": 212.98,
+        "max_ms": 252.52
+      },
+      "d1": {
+        "rows_read": 396046,
+        "rows_written": 63736,
+        "statements": 53908,
+        "by_route": {
+          "GET /api/catalog": {
+            "requests": 12801,
+            "reads": 128061,
+            "writes": 0
+          },
+          "GET /api/store": {
+            "requests": 6400,
+            "reads": 6400,
+            "writes": 0
+          },
+          "POST /api/quote": {
+            "requests": 1100,
+            "reads": 103662,
+            "writes": 0
+          },
+          "POST /api/pos": {
+            "requests": 300,
+            "reads": 14700,
+            "writes": 10200
+          },
+          "POST /api/orders": {
+            "requests": 800,
+            "reads": 122223,
+            "writes": 27467
+          },
+          "POST /api/orders/:id/test-payment": {
+            "requests": 267,
+            "reads": 1602,
+            "writes": 1869
+          },
+          "POST /api/orders/:id/state": {
+            "requests": 3260,
+            "reads": 16833,
+            "writes": 24020
+          },
+          "POST /api/orders/:id/assign": {
+            "requests": 60,
+            "reads": 360,
+            "writes": 180
+          },
+          "GET /api/admin/summary": {
+            "requests": 1,
+            "reads": 2205,
+            "writes": 0
+          }
+        }
+      },
+      "resources": {
+        "workerd_cpu_seconds": 64.95,
+        "peak_workerd_rss_mib": 1549.7,
+        "database_before": {
+          "orders": {
+            "allocated_bytes": 5427200,
+            "used_bytes": 5427200
+          },
+          "media": {
+            "allocated_bytes": 32768,
+            "used_bytes": 32768
+          }
+        },
+        "database_after": {
+          "orders": {
+            "allocated_bytes": 9433088,
+            "used_bytes": 9433088
+          },
+          "media": {
+            "allocated_bytes": 32768,
+            "used_bytes": 32768
+          }
+        }
+      }
+    },
+    {
+      "catalog_skus": 5000,
+      "online_completed": 1000,
+      "counter_completed": 300,
+      "home_deliveries": 60,
+      "seconds": 84.6,
+      "requests": 31056,
+      "p50_ms": 90.37,
+      "p95_ms": 292.76,
+      "p99_ms": 406.96,
+      "max_ms": 517.02,
+      "error_rate": 0,
+      "errors": 0,
+      "peak": {
+        "shoppers": 40,
+        "online_orders": 250,
+        "counter_orders": 75,
+        "requests": 7854,
+        "p50_ms": 215.08,
+        "p95_ms": 382.45,
+        "p99_ms": 449.33,
+        "max_ms": 517.02
+      },
+      "d1": {
+        "rows_read": 546898,
+        "rows_written": 76872,
+        "statements": 66109,
+        "by_route": {
+          "GET /api/catalog": {
+            "requests": 16001,
+            "reads": 160061,
+            "writes": 0
+          },
+          "GET /api/store": {
+            "requests": 8000,
+            "reads": 8000,
+            "writes": 0
+          },
+          "POST /api/quote": {
+            "requests": 1300,
+            "reads": 156678,
+            "writes": 0
+          },
+          "POST /api/pos": {
+            "requests": 300,
+            "reads": 14700,
+            "writes": 10200
+          },
+          "POST /api/orders": {
+            "requests": 1000,
+            "reads": 181524,
+            "writes": 34334
+          },
+          "POST /api/orders/:id/test-payment": {
+            "requests": 334,
+            "reads": 2004,
+            "writes": 2338
+          },
+          "POST /api/orders/:id/state": {
+            "requests": 4060,
+            "reads": 20966,
+            "writes": 29820
+          },
+          "POST /api/orders/:id/assign": {
+            "requests": 60,
+            "reads": 360,
+            "writes": 180
+          },
+          "GET /api/admin/summary": {
+            "requests": 1,
+            "reads": 2605,
+            "writes": 0
+          }
+        }
+      },
+      "resources": {
+        "workerd_cpu_seconds": 112.18,
+        "peak_workerd_rss_mib": 1731.1,
+        "database_before": {
+          "orders": {
+            "allocated_bytes": 5435392,
+            "used_bytes": 5435392
+          },
+          "media": {
+            "allocated_bytes": 32768,
+            "used_bytes": 32768
+          }
+        },
+        "database_after": {
+          "orders": {
+            "allocated_bytes": 10244096,
+            "used_bytes": 10244096
+          },
+          "media": {
+            "allocated_bytes": 32768,
+            "used_bytes": 32768
+          }
+        }
+      }
+    },
+    {
+      "catalog_skus": 5000,
+      "online_completed": 1500,
+      "counter_completed": 300,
+      "home_deliveries": 60,
+      "seconds": 87.9,
+      "requests": 46222,
+      "p50_ms": 66.33,
+      "p95_ms": 221.03,
+      "p99_ms": 271.59,
+      "max_ms": 333.4,
+      "error_rate": 0,
+      "errors": 0,
+      "peak": {
+        "shoppers": 48,
+        "online_orders": 375,
+        "counter_orders": 75,
+        "requests": 11645,
+        "p50_ms": 171.59,
+        "p95_ms": 263.86,
+        "p99_ms": 315.25,
+        "max_ms": 333.4
+      },
+      "d1": {
+        "rows_read": 1027387,
+        "rows_written": 109700,
+        "statements": 96607,
+        "by_route": {
+          "GET /api/catalog": {
+            "requests": 24001,
+            "reads": 240061,
+            "writes": 0
+          },
+          "GET /api/store": {
+            "requests": 12000,
+            "reads": 12000,
+            "writes": 0
+          },
+          "POST /api/quote": {
+            "requests": 1800,
+            "reads": 340930,
+            "writes": 0
+          },
+          "POST /api/pos": {
+            "requests": 300,
+            "reads": 14700,
+            "writes": 10200
+          },
+          "POST /api/orders": {
+            "requests": 1500,
+            "reads": 381431,
+            "writes": 51500
+          },
+          "POST /api/orders/:id/test-payment": {
+            "requests": 500,
+            "reads": 3000,
+            "writes": 3500
+          },
+          "POST /api/orders/:id/state": {
+            "requests": 6060,
+            "reads": 31300,
+            "writes": 44320
+          },
+          "POST /api/orders/:id/assign": {
+            "requests": 60,
+            "reads": 360,
+            "writes": 180
+          },
+          "GET /api/admin/summary": {
+            "requests": 1,
+            "reads": 3605,
+            "writes": 0
+          }
+        }
+      },
+      "resources": {
+        "workerd_cpu_seconds": 119.96,
+        "peak_workerd_rss_mib": 1827.3,
+        "database_before": {
+          "orders": {
+            "allocated_bytes": 5439488,
+            "used_bytes": 5439488
+          },
+          "media": {
+            "allocated_bytes": 32768,
+            "used_bytes": 32768
+          }
+        },
+        "database_after": {
+          "orders": {
+            "allocated_bytes": 12312576,
+            "used_bytes": 12312576
+          },
+          "media": {
+            "allocated_bytes": 32768,
+            "used_bytes": 32768
+          }
+        }
+      }
+    }
+  ],
+  "hostedBrowse": {
+    "online": 0,
+    "pos": 0,
+    "sku": 180,
+    "width": 32,
+    "visits": 8,
+    "catalog": 5000,
+    "requests": 545,
+    "errors": 0,
+    "p50_ms": 146,
+    "p95_ms": 193,
+    "p99_ms": 661,
+    "elapsed_ms": 3042,
+    "endpoints": {
+      "GET /api/__benchmark/catalog-size": {
+        "requests": 1,
+        "p50_ms": 229,
+        "p95_ms": 229,
+        "p99_ms": 229
+      },
+      "GET /api/store": {
+        "requests": 32,
+        "p50_ms": 189,
+        "p95_ms": 682,
+        "p99_ms": 694
+      },
+      "GET /api/catalog": {
+        "requests": 512,
+        "p50_ms": 144,
+        "p95_ms": 187,
+        "p99_ms": 209
+      }
+    },
+    "d1": {
+      "reads": 10152,
+      "writes": 0,
+      "statements": 801
+    }
+  },
+  "hostedStoreRepeat": [
+    {
+      "wave": 1,
+      "requests": 32,
+      "p50_ms": 442,
+      "p95_ms": 725,
+      "p99_ms": 1663
+    },
+    {
+      "wave": 2,
+      "requests": 32,
+      "p50_ms": 120,
+      "p95_ms": 124,
+      "p99_ms": 136
+    },
+    {
+      "wave": 3,
+      "requests": 32,
+      "p50_ms": 118,
+      "p95_ms": 198,
+      "p99_ms": 200
+    },
+    {
+      "wave": 4,
+      "requests": 32,
+      "p50_ms": 117,
+      "p95_ms": 141,
+      "p99_ms": 147
+    }
+  ],
+  "historicalDatabase": [
+    {
+      "days": 30,
+      "orders": 33000,
+      "skus": 5000,
+      "businessBytes": 57913344,
+      "separateMediaBytes": 37203968,
+      "reportSqliteP50Ms": 41.64,
+      "reportSqliteP95Ms": 42.84
+    },
+    {
+      "days": 60,
+      "orders": 66000,
+      "skus": 5000,
+      "businessBytes": 113758208,
+      "separateMediaBytes": 37203968,
+      "reportSqliteP50Ms": 42.13,
+      "reportSqliteP95Ms": 43.23
+    },
+    {
+      "days": 90,
+      "orders": 99000,
+      "skus": 5000,
+      "businessBytes": 169566208,
+      "separateMediaBytes": 37203968,
+      "reportSqliteP50Ms": 42.33,
+      "reportSqliteP95Ms": 42.89
+    }
+  ],
+  "hostedBrowser": [
+    {
+      "name": "budget Android lab",
+      "scope": "hosted",
+      "result": "pass",
+      "attempt": 1,
+      "lcpMs": 1900,
+      "cls": 0.059441596137152775
+    },
+    {
+      "name": "budget Android lab",
+      "scope": "hosted",
+      "result": "pass",
+      "attempt": 2,
+      "lcpMs": 1652,
+      "cls": 0.059441596137152775
+    },
+    {
+      "name": "budget Android lab",
+      "scope": "hosted",
+      "result": "pass",
+      "attempt": 3,
+      "lcpMs": 1488,
+      "cls": 0.059441596137152775
+    },
+    {
+      "name": "/orders",
+      "scope": "hosted",
+      "result": "pass",
+      "check": "Google sign-in entry"
+    },
+    {
+      "name": "/owner",
+      "scope": "hosted",
+      "result": "pass",
+      "check": "Google sign-in entry"
+    },
+    {
+      "name": "/rider",
+      "scope": "hosted",
+      "result": "pass",
+      "check": "Google sign-in entry"
+    }
+  ],
+  "browserPhotoRetry": {
+    "name": "interrupted image upload",
+    "scope": "local iPhone WebKit",
+    "result": "pass",
+    "attempts": 2,
+    "products": 1,
+    "detailsUpdates": 0
+  },
+  "endurance": {
+    "state": "in progress",
+    "start": {
+      "time": "2026-11-27T05:52:43.475Z",
+      "event": "start",
+      "expectedMinutes": 240,
+      "applicationCommit": "6db8af058c7564cbcc0f00a7b410fe56da37ab1e",
+      "before": {
+        "skus": 5000,
+        "minStock": 180,
+        "online": 63,
+        "counter": 24,
+        "pending": 0,
+        "paymentMismatch": 0,
+        "badTotals": 0,
+        "duplicateCompletions": 0,
+        "sizeBytes": 5730304
+      },
+      "phases": [
+        {
+          "name": "baseline",
+          "minutes": 30,
+          "width": 6,
+          "salesEvery": 4
+        },
+        {
+          "name": "sustained",
+          "minutes": 60,
+          "width": 12,
+          "salesEvery": 2
+        },
+        {
+          "name": "peak",
+          "minutes": 45,
+          "width": 16,
+          "salesEvery": 2
+        },
+        {
+          "name": "endurance",
+          "minutes": 60,
+          "width": 10,
+          "salesEvery": 3
+        },
+        {
+          "name": "recovery",
+          "minutes": 30,
+          "width": 6,
+          "salesEvery": 5
+        },
+        {
+          "name": "verification",
+          "minutes": 15,
+          "width": 6,
+          "salesEvery": 5
+        }
+      ],
+      "runLimits": {
+        "requests": 12000,
+        "reads": 400000,
+        "writes": 26000
+      },
+      "accountLimits": {
+        "requests": 70000,
+        "reads": 3500000,
+        "writes": 70000
+      }
+    },
+    "checkpoint": {
+      "time": "2026-11-27T06:14:45.713Z",
+      "event": "checkpoint",
+      "phase": "baseline",
+      "tick": 44,
+      "concurrency": 6,
+      "completed": {
+        "online": 12,
+        "counter": 4,
+        "delivery": 1,
+        "simulatedOnlinePayments": 4,
+        "expectedFailures": 0
+      },
+      "usage": {
+        "requests": 410,
+        "reads": 10316,
+        "writes": 1020,
+        "statements": 934,
+        "maxStatements": 13,
+        "unexpected": 0
+      },
+      "elapsedSeconds": 1322
+    },
+    "latestCloudflare": {
+      "time": "2026-11-27T06:14:19.126Z",
+      "event": "cloudflare-analytics",
+      "usage": {
+        "utcDay": "2026-11-27",
+        "asOf": "2026-11-27T06:14:16.331Z",
+        "sampling": "Cloudflare analytics may lag or be sampled.",
+        "d1RowsRead": {
+          "value": 61550,
+          "limit": 5000000,
+          "warning": false
+        },
+        "d1RowsWritten": {
+          "value": 32236,
+          "limit": 100000,
+          "warning": false
+        },
+        "workerRequests": {
+          "value": 1276,
+          "limit": 100000,
+          "warning": false
+        },
+        "worker": {
+          "name": "kirana-benchmark-staging-api",
+          "requests": 929,
+          "errors": 0,
+          "cpuP50Us": 1930,
+          "cpuP99Us": 6845
+        }
+      }
+    }
+  }
+}

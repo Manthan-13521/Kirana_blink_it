@@ -22,6 +22,7 @@ Use the **existing isolated benchmark Worker** and its two synthetic databases. 
 
 ## Acceptance records
 
+- [27 November sanitized measurements](evidence/2026-11-27.json)
 - [Feature coverage](FEATURE_COVERAGE.md)
 - [Security review](SECURITY_REPORT.md)
 - [Payment acceptance](PAYMENT_ACCEPTANCE.md)

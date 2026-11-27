@@ -9,6 +9,11 @@
 - Hosted storefront, customer, owner and rider Google entry points rendered. The existing authenticated owner dashboard in Safari showed the earlier ₹12 UPI payment as paid and completed. This cycle made no new real payment or refund.
 - A two-store local preparation rehearsal verified separate database identities, bindings, clean starting data and closed initial checkout.
 - The full local regression suite passed 38 tests. The owner photo fix retries an interrupted upload with no redundant product update, verified in iPhone WebKit. The separate test harness uses an OS-assigned debug port after concurrent Wrangler previews hit a port collision. All 28 query-plan shapes and the production dependency audit passed.
+- Application source revision [3369af0](https://github.com/Manthan-13521/Kirana_blink_it/commit/3369af01d56655884e8812652c79eb154a785b9e) passed [GitHub CI](https://github.com/Manthan-13521/Kirana_blink_it/actions/runs/45950306654) and was released to [the storefront](https://blink-it.pages.dev). Pages deployment `566b7fe1` and Worker version `89843ff2-806c-4325-a54c-efbf7e766a9c` include this QA release. The deployed photo bundle, all three sign-in entry points and closed checkout were rechecked. Merchant order, refund and media totals matched the pre-release encrypted backup.
+
+## Rollback
+
+The previous Pages production deployment is `f972e81a-3456-4a2e-b6a0-f9f93febc026`. In the `blink-it` Pages project, open **Deployments**, choose that entry's actions menu and select **Rollback to this deployment**. The previous merchant Worker version is `094e1450-922c-453b-88e2-c7e534ef1566`. If the API also requires rollback, use `wrangler rollback 094e1450-922c-453b-88e2-c7e534ef1566 --name kirana-blink-it-staging-api` with the existing authorized account. The release added no schema migration, so rollback keeps both D1 databases in place. Check the Pages service binding, the Worker flags, Google status and the merchant totals after rollback. [Pages rollback](https://developers.cloudflare.com/pages/configuration/rollbacks/) · [Worker rollback](https://developers.cloudflare.com/workers/versions-and-deployments/rollbacks/)
 
 ## Open acceptance gates
 
