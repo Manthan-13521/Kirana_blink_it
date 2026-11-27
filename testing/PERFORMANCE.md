@@ -1,5 +1,27 @@
 # Performance measurements
 
+## Catalog release comparison · 27 November 2026
+
+Two baseline and two candidate runs used the same 5,000 synthetic SKUs, query mix, local client and six bursts each at 32 and 100 clients. Each run measured 792 browse, search and detail requests. No errors or D1 writes occurred. [Sanitized measurements](evidence/catalog-2026-11-27.json)
+
+| Endpoint or metric | Baseline, two runs | Candidate, two runs |
+| --- | ---: | ---: |
+| Overall HTTP p95 | 706 / 813 ms | 748 / 697 ms |
+| Search HTTP p95 at 32 clients | 781 / 780 ms | 764 / 696 ms |
+| Search HTTP p95 at 100 clients | 785 / 1,759 ms | 706 / 697 ms |
+| Detail HTTP p95 at 32 clients | 693 / 707 ms | 754 / 668 ms |
+| Detail HTTP p95 at 100 clients | 256 / 1,672 ms | 736 / 696 ms |
+| Total D1 statements per run | 1,056 | 792 |
+| Total D1 rows read per run | 5,544 | 7,656 |
+
+Search now resolves synonyms in the same D1 statement as the indexed result page. Variant details group their SQL reads into one D1 call. The search saves one trip per request and reads eight more D1 rows per search in this fixture. The comparison's aggregate p95 still exceeds 500 ms. On the candidate, aggregate D1 SQL p95 was 0.50–0.56 ms, D1 wall p95 was 172–182 ms and time to response headers closely followed full response latency. These measures use different boundaries. They suggest that SQL execution and body transfer contribute little to the tail. Connection setup, network path and platform queueing were not individually isolated. Baseline SQL telemetry was unavailable.
+
+The public catalog always revalidates against current D1 data. An unchanged validator now returns 304 with zero body bytes, verified on hosted browsing, search and product variant routes. Stock, price and availability changes take effect on the next request. Private requests retain `no-store`. The load comparison uses full bodies for both revisions, so it excludes the bandwidth benefit of conditional requests.
+
+Candidate application [569498a](https://github.com/Manthan-13521/Kirana_blink_it/commit/569498a) is on Pages `099bfc28` and Worker `105888ed-6cef-4ae5-954f-d6babdc04138`. The bounded repeat endurance run started at 16:22:21 IST. The first run and its terminal evidence remain intact. The full sales harness now distributes placements across actual remaining fulfillment slots and includes owner reconciliation for cash deliveries.
+
+## Earlier workload and storage measurements
+
 Local Wrangler with 5,000 SKUs, 300 counter sales and 60 home deliveries. Payments were simulated. Order and POS totals reflect completed transactions.
 
 | Online | Peak shoppers | Requests | HTTP p50/p95/p99 (ms) | Peak p95/p99 (ms) | D1 reads/writes | Errors |

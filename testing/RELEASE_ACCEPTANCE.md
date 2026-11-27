@@ -2,6 +2,14 @@
 
 **Verdict FAIL for commercial launch.** Hosted target capacity and latency, post-rotation Razorpay replay, and production rollover remain open. Public checkout, live payment initiation and live refunds are disabled.
 
+## Performance release follow-up
+
+- [569498a](https://github.com/Manthan-13521/Kirana_blink_it/commit/569498a) is deployed to Pages `099bfc28` and Worker `105888ed-6cef-4ae5-954f-d6babdc04138`. All 39 regressions passed alongside type checking, build, indexed query checks, production dependency audit and [GitHub CI](https://github.com/Manthan-13521/Kirana_blink_it/actions/runs/45985644591). Hosted conditional catalog responses returned 304, and private orders remained non-cacheable.
+- Four matched hosted runs at 32 and 100 clients recorded baseline p95 of 706 and 813 ms and candidate p95 of 748 and 697 ms. The candidate reduced D1 statements from 1,056 to 792 per run, with zero writes and no errors. The 500 ms latency gate remains unmet. [Measurements](PERFORMANCE.md)
+- The separate candidate endurance run started 27 November at 16:22:21 IST. At the first checkpoint the fixture retained 5,000 active SKUs, with zero unsettled orders, payment mismatches or duplicate completions at baseline. Final candidate endurance and full hosted workload await evidence. On 27 November the latest pre-run quota check showed 46,013 account writes, above the full-test admission threshold. The next quota window starts 28 November at 05:30 IST.
+- The Mac calendar scheduler triggered the merchant backup wrapper naturally at 16:21 IST and exited 0. The same-day verified backup marker prevented a duplicate export. The first overnight calendar-triggered export remains pending. The private launchd backup and restoration already passed.
+- Physical Android and iPhone checks require available test devices. Independent hosted merchant acceptance requires its own approved account and provider credentials. Live rollover requires approved retention and a scheduled cutover. Post-rotation Razorpay verification still requires the matching signing secret and a genuine new provider delivery or an eligible replay.
+
 ## 27 November follow-up
 
 | Gate | Result | Evidence |

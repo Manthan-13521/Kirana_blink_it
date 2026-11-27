@@ -17,10 +17,14 @@ Run from the project root. Use Node.js with `node:sqlite`, the locked dependenci
 
 Use the **existing isolated benchmark Worker** and its two synthetic databases. Keep the generated configs, credentials and raw logs in a private directory outside the repository. Do not use the merchant Worker or databases. Check the current Wrangler login and quota first.
 
-1. Run `node testing/prepare-benchmark.mjs BENCHMARK_MANIFEST PRIVATE_MERCHANT_MANIFEST PRIVATE_WORKER_CONFIG PRIVATE_CLIENT_CONFIG`. The command verifies account and database bindings, applies migrations only to the synthetic databases and deploys a token-protected benchmark Worker with a short-lived credential. A dedicated seeded fixture must already contain 5,000 products and have no pending orders.
+1. Run `node testing/prepare-benchmark.mjs BENCH_WRANGLER STORE_MANIFEST OLD_BENCH_CLIENT NEW_WRANGLER NEW_CLIENT ACCOUNT_ID RECENT_SEED_WRITES`. Set `RECENT_SEED_WRITES` to 0 once analytics accounts for earlier seed activity. The command verifies account and database bindings, applies migrations only to the synthetic databases and deploys a token-protected benchmark Worker with a short-lived credential. A dedicated seeded fixture must already contain 5,000 products and have no pending orders.
 2. Run `node testing/endurance.mjs PRIVATE_CLIENT_CONFIG NEW_EVIDENCE.jsonl` from a persistent terminal. Use the scoped Cloudflare analytics token or set `KIRANA_WRANGLER_OAUTH_CONFIG` to the existing private Wrangler OAuth configuration file. The runner writes frequent checkpoints and recalculates the remaining quota against observed account usage. A bearer or quota failure creates a failure record.
 3. Require a terminal `complete` record, elapsed time of at least four hours, no unexpected HTTP errors and clean before/after integrity checks. Partial JSONL files provide progress and diagnosis. Restart with a fresh path and credential if the process is interrupted. The bounded endurance run and full-volume hosted benchmark cover separate acceptance criteria.
 4. Read the original log without changing it using `node testing/report-endurance.mjs EVIDENCE.jsonl`. The report prints a partial status until final latency and integrity records are available.
+
+## Full hosted sales target
+
+After the candidate endurance ends and enough UTC-day quota is available, renew the benchmark credential as above. Use a scoped Cloudflare Analytics Read token with `node tools/quota-report.mjs ACCOUNT_ID kirana-benchmark-staging-api > PRIVATE_QUOTA.json`. The file must be less than one minute old when passing it to `node tests/hosted-benchmark.mjs NEW_CLIENT target PRIVATE_QUOTA.json`. Supply the scoped token or `KIRANA_WRANGLER_OAUTH_CONFIG` to this process so it can refresh analytics during the test. The harness reserves available fulfillment windows before placing orders, reconciles simulated delivery cash and checks database invariants before and after. Use a new evidence file for each test run.
 
 ## Acceptance records
 

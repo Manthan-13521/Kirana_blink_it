@@ -96,6 +96,19 @@ const browse=async index=>{
   await guest('/api/catalog?category=pantry&limit=12')
   await guest('/api/catalog?q=benchmark+'+sku+'&limit=12')
 }
+function reserveWindows(windows,count){
+  assert.ok(windows.reduce((total,window)=>total+window.remaining,0)>=count,
+    'The isolated store has insufficient available fulfillment slots.')
+  const available=windows.map(window=>({...window}))
+  let next=0
+  return Array.from({length:count},()=>{
+    while(!available[next].remaining)next=(next+1)%available.length
+    const slot=available[next]
+    slot.remaining--
+    next=(next+1)%available.length
+    return slot.start
+  })
+}
 async function sales(){
   await post(owner,'/auth/demo',{role:'owner'})
   await post(rider,'/auth/demo',{role:'rider'})
@@ -109,16 +122,22 @@ async function sales(){
     return {call,addressId:address.id}
   }))
   const pickup=await guest('/api/slots?mode=pickup'),delivery=await guest('/api/slots?mode=delivery')
-  assert.ok(pickup.length&&delivery.length)
+  const mix=Array.from({length:counts.online+counts.pos},(_,position)=>{
+    if(position%3===0&&position/3<counts.pos)return 'counter'
+    return position%13===1?'delivery':'pickup'
+  })
+  const pickupSlots=reserveWindows(pickup,mix.filter(mode=>mode==='pickup').length)
+  const deliverySlots=reserveWindows(delivery,mix.filter(mode=>mode==='delivery').length)
+  let nextPickup=0,nextDelivery=0
   let task=0
   async function sale(position,shopper){
-    const online=position%3!==0||position/3>=counts.pos
-    const pickupIndex=position%pickup.length,drops=online&&position%13===1
+    const fulfillment=mix[position]
+    const online=fulfillment!=='counter',drops=fulfillment==='delivery'
     const fixtureSkus=counts.sku-16
     const items=Array.from({length:6},(_,i)=>({id:'load-'+String((position*13+i)%fixtureSkus+1).padStart(4,'0'),steps:1}))
     const method=online&&position%4===1?'online':'cash'
-    const checkout={fulfillment:online?(drops?'delivery':'pickup'):'counter',method,items,
-      ...(online?{slot:drops?delivery[position%delivery.length].start:pickup[pickupIndex].start}:{})}
+    const checkout={fulfillment,method,items,
+      ...(online?{slot:drops?deliverySlots[nextDelivery++]:pickupSlots[nextPickup++]}:{})}
     if(drops)checkout.addressId=shopper.addressId
     const call=online?shopper.call:owner
     if(online)for(let i=0;i<counts.visits;i++)await Promise.all([
@@ -137,6 +156,7 @@ async function sales(){
       await move(owner,'ready')
       if(drops)await move(rider,'out_for_delivery')
       await move(drops?rider:owner,'completed',method==='cash'?{cash:quote.total}:{})
+      if(drops&&method==='cash')await post(owner,'/orders/'+id+'/reconcile')
     }
   }
   await Promise.all(shoppers.map(async shopper=>{while(task<counts.online+counts.pos)await sale(task++,shopper)}))
