@@ -9,7 +9,7 @@
 | Complete the original four-hour endurance run | PASS | 11:22:43 to 15:22:48 IST, 6,919 requests, 172 online orders, 60 counter sales, zero unexpected errors, peak 100 clients. No quota stop. |
 | Hosted latency and target workload | FAIL | Endurance p50/p95/p99 were 230/728/971 ms. Catalog p95 was 754 ms. Endurance used 132,910 D1 reads and 14,050 writes. Sampled Worker CPU p50/p99 were 2.12/6.17 ms. Full 5,000-SKU, 800 online and 300 counter test awaits an eligible UTC quota window. |
 | Endurance integrity | PASS | 5,000 SKUs, minimum stock 180, zero pending payments, unexplained totals, payment mismatches or duplicate completion events. |
-| Existing authentic Razorpay delivery | PASS | Provider history confirmed HTTP 200 for `payment.captured` and `order.paid` at 11:07:28 IST. D1 recorded one matched-time Live capture. |
+| Existing authentic Razorpay delivery | PASS | Provider history confirmed HTTP 200 for `payment.captured` and `order.paid` at 11:07:28 IST. D1 recorded one Live capture, one confirmation, and one stock deduction for the ₹12 order. |
 | Current secret alignment and provider replay | FAIL | The old saved secret produced HTTP 403 on the local diagnostic. The successful provider attempts establish the earlier delivery, while a fresh post-rotation event and provider replay still need verification. |
 | Private rider workflow | PASS | Three real Google sign-ins, private COD order, owner assignment, rider completion, shopper tracking and cash reconciliation. One deduction and zero provider charges. Temporary private checkout access was revoked. |
 | Unattended backup and restoration | PASS | The launchd job completed a merchant backup in the private Application Support directory. Both stores restored with valid integrity and foreign keys. Daily schedule installed. |
@@ -17,6 +17,10 @@
 | Live rollover, physical-device and independent merchant acceptance | FAIL | Live retention and cutover, a physical phone workflow and independent provider accounts remain open. |
 
 The [final endurance report](evidence/endurance-2026-11-27-final.json) records full endpoint timings and the validated terminal checks. The earlier summary below documents the release state before this follow-up.
+
+The rider-history fix in [3b2634c](https://github.com/Manthan-13521/Kirana_blink_it/commit/3b2634c) passed 38 regression tests, a browser account-switch regression and [GitHub CI](https://github.com/Manthan-13521/Kirana_blink_it/actions/runs/45983562138). It is deployed on Pages `c15daf0b` and Worker `6f70b0a4-92ab-43ff-8937-915b865267b2`. The real rider saw only the assigned test order after signing in. Guest access returned 401 and public checkout remained closed. The tested rollback release is Pages `cd234fa9`. Before any Worker rollback, verify that temporary checkout access remains revoked.
+
+At 16:06 IST the account reported 46,003 D1 writes. The full-volume harness requires fewer than 14,000 pre-existing writes under its 76,000-row reservation and 90,000-row stop limit. The next UTC quota reset is 05:30 IST on 28 November. It also requires a fresh isolated benchmark credential and rechecks D1 reads, writes and Worker requests during the run.
 
 ## Verified
 
