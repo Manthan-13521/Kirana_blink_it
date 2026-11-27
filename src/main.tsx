@@ -194,7 +194,7 @@ function App(){
           action={<button className="button primary" onClick={()=>signIn('customer')}>Sign in to view orders</button>}/>}
       </main>:!allowed||!account?<main className="shell role-entry">
         <div className="console-hero"><div><small>{view==='owner'?'STORE WORKSPACE':'DELIVERY WORKSPACE'}</small><h1>{view==='owner'?'Manage your Kirana':'Deliver for your Kirana'}</h1><p>{view==='owner'?'Catalog, orders, counter sales and store settings.':'Assigned orders, route stops and cash collections.'}</p></div><button className="button light" onClick={()=>signIn(currentRole)}>Sign in as {view==='owner'?'owner':'rider'} <ArrowRight size={17}/></button></div>
-      </main>:<Suspense fallback={<main className="shell startup"><p>Loading workspace…</p></main>}>{view==='owner'?<Owner account={account} shop={shop} refreshShop={refreshShop}/>:<Rider account={account} shop={shop}/>}</Suspense>}
+      </main>:<Suspense fallback={<main className="shell startup"><p>Loading workspace…</p></main>}>{view==='owner'?<Owner account={account} shop={shop} refreshShop={refreshShop}/>:<Rider account={account} shop={shop} local={local}/>}</Suspense>}
     {modal==='signin'&&<SignIn role={loginRole} local={local} checkout={checkoutIntent.current} close={()=>{checkoutIntent.current=false;setModal(null)}} signed={signed}/>}
     {modal==='profile'&&account&&<Profile account={account} setAccount={setAccount} local={local} close={()=>setModal(null)} logOut={()=>void logOut()} orders={()=>go('orders')} addresses={()=>setModal('location')} switchRole={()=>signIn(currentRole)}/>}
     {shop&&modal==='location'&&<Location shop={shop} account={account} onClose={()=>setModal(null)} signIn={()=>signIn('customer')}/>}

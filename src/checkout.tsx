@@ -29,12 +29,17 @@ export function AddressForm({shop,account,saved}:{shop:Shop;account:Account; sav
       <label className="span-full">Street and house number<input name="line1" required maxLength={200}/></label>
       <label>Locality<input name="locality" required maxLength={70}/></label><label>Landmark<input name="landmark" maxLength={100}/></label>
     </div>
-    <div className="actions"><button type="button" className="button secondary" onClick={()=>{setMap(!map);if(!point)setPoint({latitude:shop.latitude,longitude:shop.longitude})}}><MapPin size={16}/> {map?'Hide pin':'Set pin'}</button>
+    <div className="actions"><button type="button" className="button secondary" onClick={()=>setMap(!map)}><MapPin size={16}/> {map?'Hide pin':'Set pin'}</button>
       <button type="button" className="button secondary" onClick={()=>navigator.geolocation?.getCurrentPosition(pos=>{setPoint({latitude:pos.coords.latitude,longitude:pos.coords.longitude});setMap(true)},e=>setError(e.message),{timeout:8000})}>Use my location</button>
       {point&&<button type="button" className="text-arrow" onClick={()=>{setPoint(null);setMap(false)}}>Clear pin</button>}
     </div>
-    {map&&point&&<><Suspense fallback={<p>Loading pin editor…</p>}><MapPinView {...point} set={(latitude,longitude)=>setPoint({latitude,longitude})}/></Suspense>
-      <div className="form-grid"><label>Latitude<input type="number" min="-90" max="90" step="any" value={point.latitude} onChange={e=>setPoint({...point,latitude:Number(e.target.value)})}/></label><label>Longitude<input type="number" min="-180" max="180" step="any" value={point.longitude} onChange={e=>setPoint({...point,longitude:Number(e.target.value)})}/></label></div></>}
+    {map&&<Suspense fallback={<p>Loading pin editor…</p>}>
+      <MapPinView latitude={shop.latitude} longitude={shop.longitude} point={point} set={(latitude,longitude)=>setPoint({latitude,longitude})}/>
+    </Suspense>}
+    {map&&point&&<div className="form-grid">
+      <label>Latitude<input type="number" min="-85" max="85" step="any" value={point.latitude} onChange={e=>setPoint({...point,latitude:Number(e.target.value)})}/></label>
+      <label>Longitude<input type="number" min="-180" max="180" step="any" value={point.longitude} onChange={e=>setPoint({...point,longitude:Number(e.target.value)})}/></label>
+    </div>}
     <button className="button primary" type="submit" disabled={busy}>Save address</button>
   </form>
 }

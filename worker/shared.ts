@@ -7,11 +7,18 @@ export type Env = {
     DB: D1Database; MEDIA: D1Database; APP_MODE?: string; ASSETS?: Fetcher
     GOOGLE_CLIENT_ID?:string; GOOGLE_CLIENT_SECRET?:string; GOOGLE_ORIGIN?:string
     GOOGLE_OWNER_EMAILS?:string; GOOGLE_RIDER_EMAIL?:string; STAGING_CHECKOUT_EMAILS?:string
-    MEDIA_STATIC_ORIGIN?:string; GEOAPIFY_KEY?:string; VAPID_PUBLIC_KEY?:string; VAPID_PRIVATE_JWK?:string; VAPID_CONTACT?:string
+    MEDIA_STATIC_ORIGIN?:string; MAPBOX_ROUTING_TOKEN?:string; MAPBOX_TILE_TOKEN?:string; VAPID_PUBLIC_KEY?:string; VAPID_PRIVATE_JWK?:string; VAPID_CONTACT?:string
     RAZORPAY_KEY_ID?:string; RAZORPAY_KEY_SECRET?:string; RAZORPAY_WEBHOOK_SECRET?:string
     RAZORPAY_MODE?:string; RAZORPAY_UPI_CONFIG_ID?:string; RAZORPAY_LIVE_CHECKOUT?:string; RAZORPAY_LIVE_REFUNDS?:string; PUBLIC_CHECKOUT?:string
   }
   Variables: { account: Account; localEntry: boolean; stagingCheckout:boolean }
+}
+export function savedDeliveryAddress(value:string|null):Address|null{
+  if(!value)return null
+  try{
+    const address:unknown=JSON.parse(value)
+    return address&&typeof address==='object'&&!Array.isArray(address)?address as Address:null
+  }catch{return null}
 }
 export type Ctx = Context<Env>
 export type Shop = {

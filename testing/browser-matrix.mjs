@@ -78,7 +78,7 @@ try {
       await rider.goto(local.base + '/rider')
       await button(rider, 'Sign in as rider').click()
       await button(rider, 'Continue as demo rider').click()
-      await rider.getByRole('heading', { name: 'Your delivery run' }).waitFor()
+      await rider.getByRole('heading', { name: 'Delivery navigation' }).waitFor()
       assert.equal(await rider.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true)
       if (name === 'desktop') {
         await page.goto(local.base + '/owner')

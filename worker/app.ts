@@ -1,9 +1,11 @@
+import { mapboxMapSession } from './mapbox'
 import { Hono } from 'hono'
 import { deleteCookie,getCookie } from 'hono/cookie'
 import { bodyLimit } from 'hono/body-limit'
 import { catalog } from './catalog'
 import { orders } from './orders'
 import { routing } from './routing'
+import { riderNavigation } from './rider-navigation'
 import { push } from './push'
 import { capacity } from './capacity'
 import { razorpay } from './razorpay'
@@ -84,6 +86,10 @@ export function application(localRoutes?:Hono<Env>) {
   api.get('/addresses',async c=>{
     const actor=role(c,'customer')
     return c.json(await all(c.env.DB,`SELECT ${profileFields} FROM addresses WHERE account_id=? ORDER BY created_at DESC LIMIT 20`,actor.id))
+  })
+  api.post('/addresses/map-session',c=>{
+    role(c,'customer')
+    return mapboxMapSession(c,'addressTiles')
   })
   api.post('/addresses',async c=>{
     const actor=role(c,'customer'),db=c.env.DB,data=await json(c)
@@ -237,6 +243,7 @@ export function application(localRoutes?:Hono<Env>) {
   api.route('/',catalog)
   api.route('/',orders)
   api.route('/',routing)
+  api.route('/',riderNavigation)
   api.route('/',push)
   api.route('/',capacity)
   api.route('/',razorpay)

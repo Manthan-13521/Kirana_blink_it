@@ -1,8 +1,9 @@
+import { riderAssignmentLimit } from './navigation-model'
 import { Hono } from 'hono'
 import { queueOrderRefund,refundSelect } from './checkout-payments'
 import { queuePush } from './push'
 import { checkoutCredentials,paymentCredentials } from './payment-provider'
-import { all,audit,authorizeOrder,availableSlot,checkoutAccess,configuredSlot,digest,errorMap,fulfillmentEnabled,I,id,json,now,one,onlineOrderingAvailable,order,parseLines,Problem,publicOrderFields,role,S,services,shop,shopDayStart,slots,statement,localhost } from './shared'
+import { all,audit,authorizeOrder,availableSlot,checkoutAccess,configuredSlot,digest,errorMap,fulfillmentEnabled,I,id,json,now,one,onlineOrderingAvailable,order,parseLines,Problem,publicOrderFields,role,S,savedDeliveryAddress,services,shop,shopDayStart,slots,statement,localhost } from './shared'
 import type { Address, Ctx, Env, Order, Product } from './shared'
 
 export const orders = new Hono<Env>()
@@ -162,7 +163,7 @@ orders.get('/orders/:id',async c=>{
   const liveRefunds=account.role==='owner'&&c.env.RAZORPAY_LIVE_REFUNDS==='enabled'
     ?pendingRefunds.filter(r=>r.mode==='live'&&!r.failed_at).map(({id,amount,status})=>({id,amount,status})):undefined
   const sanitized=Object.fromEntries(publicOrderFields.split(',').map(k=>[k,row[k as keyof Order]]))
-  return c.json({...sanitized,trackingVersion:trackingVersion(events.at(-1)?.id??null),address:canAccessContact&&row.address_json?JSON.parse(row.address_json):null,invoice:account.role==='rider'?null:JSON.parse(row.billing_json),assigned_to:row.assigned_to,items,events:events.map(({id,...event})=>event),cases,refunds,refundPending:Boolean(pendingRefunds.length),refundFailed:pendingRefunds.some(r=>Boolean(r.failed_at)),paymentFailed:Boolean(paymentAttempt?.failed_at),canReconcilePayment:Boolean(paymentAttempt?.provider_order_id),liveRefunds})
+  return c.json({...sanitized,trackingVersion:trackingVersion(events.at(-1)?.id??null),address:canAccessContact?savedDeliveryAddress(row.address_json):null,invoice:account.role==='rider'?null:JSON.parse(row.billing_json),assigned_to:row.assigned_to,items,events:events.map(({id,...event})=>event),cases,refunds,refundPending:Boolean(pendingRefunds.length),refundFailed:pendingRefunds.some(r=>Boolean(r.failed_at)),paymentFailed:Boolean(paymentAttempt?.failed_at),canReconcilePayment:Boolean(paymentAttempt?.provider_order_id),liveRefunds})
 })
 
 const ownerTransitions: Record<string,string[]> = {
@@ -323,20 +324,26 @@ orders.get('/rider/route',async c=>{
   const rider=actor.role==='rider'?actor:await one<{id:string}>(db,"SELECT id FROM accounts WHERE role='rider' AND active=1")
   const dayStart=shopDayStart(now())
   const [rows,summary]=rider?await Promise.all([
-    all<{id:string;route_rank:number;address_json:string;status:string}>(db,`SELECT id,route_rank,address_json,status FROM orders WHERE assigned_to=? AND status IN('ready','out_for_delivery') ORDER BY route_rank,created_at,id LIMIT 30`,rider.id),
+    all<{id:string;route_rank:number;address_json:string|null;status:string;slot_end:number|null}>(db,`SELECT id,route_rank,address_json,status,slot_end FROM orders WHERE assigned_to=? AND status IN('ready','out_for_delivery') AND fulfillment='delivery' ORDER BY route_rank,created_at,id LIMIT ?`,rider.id,riderAssignmentLimit),
     one<{completed:number;cash:number;active:number}>(db,`SELECT
       (SELECT COUNT(*) FROM order_events AS event INDEXED BY completed_events_recent
        CROSS JOIN orders AS completed ON completed.id=event.order_id
        WHERE event.status='completed' AND event.created_at>=? AND completed.assigned_to=? AND completed.fulfillment='delivery') completed,
       (SELECT COALESCE(SUM(total),0) FROM orders WHERE assigned_to=? AND fulfillment='delivery' AND payment_status='cash_collected' AND reconciled=0) cash,
-      (SELECT COUNT(*) FROM orders WHERE assigned_to=? AND status IN('ready','out_for_delivery')) active`,dayStart,rider.id,rider.id,rider.id),
+      (SELECT COUNT(*) FROM orders WHERE assigned_to=? AND status IN('ready','out_for_delivery') AND fulfillment='delivery') active`,dayStart,rider.id,rider.id,rider.id),
   ]):[[],null]
-  return c.json({summary:summary??{completed:0,cash:0,active:0},origin:{latitude:config.latitude,longitude:config.longitude},orders:rows.map(row=>({id:row.id,rank:row.route_rank,status:row.status,address:JSON.parse(row.address_json)}))})
+  const origin={latitude:config.latitude,longitude:config.longitude}
+  const totals=summary??{completed:0,cash:0,active:0}
+  const version=await digest(JSON.stringify([origin,totals,rows]))
+  if(c.req.query('v')===version)return c.json({unchanged:true})
+  const assignments=rows.map(row=>({id:row.id,rank:row.route_rank,status:row.status,slotEnd:row.slot_end,
+    address:savedDeliveryAddress(row.address_json)}))
+  return c.json({version,summary:totals,origin,orders:assignments})
 })
 orders.put('/rider/route',async c=>{
   const actor=role(c,'rider','owner'),db=c.env.DB,data=await json(c)
   const raw=data.orders
-  if(!Array.isArray(raw)||raw.length>30) throw new Problem(400,'Invalid route.')
+  if(!Array.isArray(raw)||raw.length>riderAssignmentLimit) throw new Problem(400,'Invalid route.')
   const ids=raw.map(x=>S(x,'order ID',80))
   if(new Set(ids).size!==ids.length) throw new Problem(400,'Duplicate stop.')
   if(!ids.length) return c.json({ok:true})
@@ -344,6 +351,9 @@ orders.put('/rider/route',async c=>{
   if(!rider) throw new Problem(409,'No rider is active.')
   const rows=await all<{id:string}>(db,`SELECT id FROM orders WHERE assigned_to=? AND status IN('ready','out_for_delivery') AND id IN (${ids.map(()=>'?').join(',')})`,rider.id,...ids)
   if(rows.length!==ids.length) throw new Problem(403,'One route stop is unavailable.')
-  await db.batch(ids.map((orderId,i)=>statement(db,`UPDATE orders SET route_rank=? WHERE id=? AND assigned_to=? AND status IN('ready','out_for_delivery') AND route_rank<>?`,i+1,orderId,rider.id,i+1)))
+  await statement(db,`WITH desired(stop_id,position) AS (VALUES ${ids.map((_,i)=>'(?, '+(i+1)+')').join(', ')})
+    UPDATE orders SET route_rank=desired.position FROM desired
+    WHERE orders.id=desired.stop_id AND assigned_to=? AND status IN('ready','out_for_delivery')
+      AND route_rank<>desired.position`,...ids,rider.id).run()
   return c.json({ok:true})
 })

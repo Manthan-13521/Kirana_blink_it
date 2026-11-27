@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { all,now,one,role } from './shared'
 import type { Env } from './shared'
-import { routingCreditCap } from './routing'
+import { mapboxLimits,mapboxServices } from './mapbox'
 import { pushDailyCap } from './push'
 
 export const capacity=new Hono<Env>()
@@ -20,7 +20,10 @@ capacity.get('/admin/capacity',async c=>{
     measure('Image payload bytes',media?.bytes??null,201326592),
     measure('Stored image versions',media?.files??null,6500),
     measure('Image uploads today',media?.uploads??null,300),
-    measure('Routing credits reserved today',used('routing'),routingCreditCap),
+    measure('Mapbox Matrix elements reserved today',used(mapboxServices.matrix),mapboxLimits.matrix),
+    measure('Mapbox Directions requests reserved today',used(mapboxServices.directions),mapboxLimits.directions),
+    measure('Mapbox Static Tiles reserved today',used(mapboxServices.tiles),mapboxLimits.tiles),
+    measure('Mapbox address tiles reserved today',used(mapboxServices.addressTiles),mapboxLimits.addressTiles),
     measure('Google sign-in attempts today',used('google-oauth'),2000),
     measure('Razorpay checkout order attempts today',used('razorpay-order'),c.env.RAZORPAY_MODE==='live'?1200:200),
     measure('Shopper Razorpay status checks today',used('razorpay-customer-status'),480),

@@ -1,0 +1,52 @@
+# Kirana production handover
+
+**Status on 27 November 2026, IST**
+
+Locally verified Mapbox candidate. Commercial launch on hold.
+
+The candidate keeps the rider layout approved on localhost and uses authenticated assignments, saved customer pins, store coordinates, live GPS and real order transitions. It replaces Geoapify in the candidate with Mapbox Matrix, Directions and Static Tiles. The browser holds the current trip geometry and processes GPS progress, camera location and maneuver changes locally. Foreground assignment checks return a compact unchanged response when the snapshot version matches. The customer address picker uses the same road map and saves a pin only after an explicit choice or device location.
+
+The existing [storefront](https://blink-it.pages.dev/), [owner](https://blink-it.pages.dev/owner) and [rider](https://blink-it.pages.dev/rider) URLs are the deployment targets. The current public health endpoint responded successfully. The prior release records Pages revision `d1ff1272` and Worker version `105888ed-6cef-4ae5-954f-d6babdc04138`; reconfirm the serving revisions before rollout. The candidate has stayed in an isolated checkout and has made no merchant database changes, production secret changes, public checkout changes or payment transactions.
+
+## Evidence and open acceptance
+
+| Area | Verified in isolated acceptance | Remaining hosted or merchant verification |
+| --- | --- | --- |
+| Catalog and settings | Owner catalog, categories, prices, images, variants, stock, branding and fulfillment controls covered by regressions. Storefront revalidation and immutable purchased prices verified. | Owner-led check against the merchant catalog and business settings. |
+| Customer and rider | Three synthetic customers placed COD orders at distinct delivery pins. The owner prepared and assigned them. Live Mapbox optimized the route and rendered it in Android Chromium and iPhone WebKit emulation. iPhone WebKit verified that opening the address map waited for explicit pin selection. Android exercised GPS updates, recentering, pickup and all three COD completions. Customer and owner status matched, rider contact access closed after delivery, and the reserved stock ended at the expected quantity. | Protected credentials and fresh hosted customer, owner and rider sign-in. Physical Android and iPhone GPS, permission and interrupted network checks. |
+| Maps and credentials | The authorized account’s existing public token was used for isolated acceptance. The candidate’s backend uses a fixed provider host, actor-scoped order IDs, bounded coordinates, token separation in hosted builds and separate quotas. The browser requests tiles directly, with required Mapbox attribution. Tests cover unreachable stops, authorization, quota exhaustion and provider redirects. | Verify the distinct protected production tokens and account usage. Confirm production address and rider map loading. |
+| Inventory and POS | Tests cover contention for the final available stock, stock restoration, idempotency, simultaneous checkout and price edits, selected SKU quantities and historical invoices. The 5,000-SKU local workload completed 800 online orders and 300 counter sales. | Reconcile the frozen hosted run and measure the final hosted revision. |
+| Payments | Existing Standard Checkout and webhook fixtures cover signatures, exact amounts, duplicate delivery, interrupted sessions, late captures, refund review and COD reconciliation. | Post-rotation private UPI capture and authentic webhook check with express transaction authorization. Keep public checkout and live refunds disabled until commercial approval. |
+| Production cleanup | The release bundle excluded demo auth, QA Worker entrypoints and seed migrations. Rider simulation controls and Geoapify requests are absent from the candidate. Test fixtures remain in the repository. | Back up the actual merchant database and classify records before any removal. Preserve records of uncertain origin. A read-only merchant D1 audit found zero seeded demo accounts, orders tied to those IDs, benchmark SKUs and mock payment rows. Sixteen of 17 catalog products matched the staging seed. Those sample products are referenced by 11 order lines and 11 stock-history rows. Preserve those relationships and have the owner identify which sample products should be deactivated. Both classification queries wrote zero rows. Hosted credential and resource cleanup is pending. |
+
+The candidate passed **55 regression tests**, type checking, the production asset build, D1 query-plan checks and production release packaging. Run `testing/mapbox-acceptance.mjs` with the isolated Mapbox credentials and Playwright to reproduce the live map check.
+
+## Performance and free-tier budget
+
+- The local mixed workload recorded **24,989 requests**, **139.94 ms p95**, **162.66 ms peak p95**, **447,254 D1 rows read**, **63,736 rows written**, **67.13 seconds aggregate workerd CPU** and zero errors. The run included 60 delivery lifecycles. It did not fetch Mapbox routes. Aggregate workerd CPU is a local process measurement.
+- The live isolated three-stop Mapbox plan contained **249 road points**, **7,041 bytes of route JSON** and **7.68 km of road geometry**. The GPS and COD workflow reused it across three stops. The two cold plans took **88 ms and 718 ms** in browser end-to-end measurements. The requests reported **16 reads and 2 writes**, and **14 reads and 4 writes**, respectively. The two trip plans reserved **24 Matrix elements and two Directions requests**. One captured iPhone tile was **83,597 bytes** and five Android tiles totalled **376,822 bytes**. These are partial tile samples. Hosted per-invocation CPU and hosted p95 for this revision remain unmeasured.
+- Workers Free lists **100,000 requests per day** and **10 ms HTTP CPU per invocation**. D1 Free lists **5 million reads** and **100,000 writes per day**, account-wide. Keep the existing **90,000-write safety ceiling** on hosted benchmarks and the **500 ms mixed-workload p95** target. [Workers limits](https://developers.cloudflare.com/workers/platform/limits/) · [D1 pricing](https://developers.cloudflare.com/d1/platform/pricing/)
+- Mapbox lists **100,000 Matrix elements**, **100,000 Directions requests** and **200,000 Static Tiles** per month in its free allowances. This installation reserves up to 2,500 Matrix elements, 2,500 Directions requests and 5,200 Static Tiles each UTC day. Tiles are split between address and rider views. The bounds model this installation’s requests. Shared-account projects and requests made outside the app still count toward billed account usage. [Mapbox pricing](https://www.mapbox.com/pricing/) · [Matrix billing](https://docs.mapbox.com/api/navigation/matrix/) · [Static Tiles API](https://docs.mapbox.com/api/maps/static-tiles/)
+- An eight-stop cold trip uses **72 Matrix elements and one Directions request**. At 2,500 Matrix elements per day, full eight-stop trips plus one six-stop trip model **278 deliveries before replanning or retries**, assuming the Matrix budget is otherwise unused. This is a provider operation model. Actual one-rider capacity depends on roads, pickup, handoff and working time.
+
+## Frozen benchmark and rollout
+
+The earlier hosted endurance candidate stopped at the account-wide write guard after **160 online and 55 counter sales**. Its subsequent continuation ended **partial** at **382 online and 144 counter sales**, with zero unexpected request errors. These results belong to the frozen hosted revision. The full **28 November 05:35 IST** benchmark is still scheduled against its isolated configuration.
+
+After the benchmark reaches a terminal result, compare the final candidate against the same request, latency, stock and quota criteria. Use a separate synthetic acceptance database and the production Worker entrypoint for hosted checks. Before deployment, record the serving Workers and Pages revisions, verify the encrypted merchant backup, confirm the existing database identifiers, and keep both deployment rollback versions accessible. Configure the distinct production Mapbox secrets and verify hosted routing before retiring the old provider credential. This candidate needs no new D1 migration for Mapbox. Keep `PUBLIC_CHECKOUT`, `RAZORPAY_LIVE_CHECKOUT` and `RAZORPAY_LIVE_REFUNDS` disabled during rollout. Restore the recorded deployment versions if post-deploy checks fail.
+
+## Daily operating guide
+
+**Owner:** Sign in with Google at **Owner**. Use **Store settings** for the store details, location, delivery radius, PIN codes, hours, fees and fulfillment switches. Use **Catalog & stock** for products, categories, images, variants, prices and stock. Use **Counter** for walk-in sales. In **Orders**, accept an order, start packing, mark it ready and assign delivery orders to the rider. Open the completed order to review the invoice and reconcile COD. Review sale totals, exceptions and low stock in **Overview**.
+
+**Rider:** Sign in with the authorized Google account at **Rider**. Confirm pickup when you have the orders, enable foreground GPS, and follow the next turn. Use recenter after moving the map. At the customer, open **Complete delivery** and record the actual COD amount when due. The next assigned stop appears automatically. If a pin is missing, open the assigned order for its saved address and contact details. Stop safely before interacting with the screen, and follow traffic rules.
+
+**Independent stores:** Use dedicated Pages and Worker names, business and media D1 bindings, and per-store secrets. The supported release generator starts new merchant databases with the store settings and empty business records. Follow the [deployment instructions](README.md).
+
+## Access and launch decisions
+
+1. Provide or authorize creation of the dedicated production Mapbox tile and routing tokens. Use scope and origin restrictions for the public tile token. Keep both token values out of GitHub and chat.
+2. Arrange physical Android and iPhone acceptance with the intended shop owner and rider Google identities.
+3. Confirm which of the 16 seed-matched product listings to deactivate. Preserve the 11 order lines and 11 stock-history rows. Authorize any data destruction separately, with the specific records identified after backup.
+4. Authorize a private post-rotation UPI payment separately from commercial launch.
+5. Approve opening public checkout and live financial operations only after the hosted candidate, payment and device gates pass.

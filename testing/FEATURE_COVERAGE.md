@@ -16,7 +16,7 @@ Each row describes a feature group and the strongest available evidence. Protect
 | Owner | Orders, pickup, assignment, cases and cash | Local owner/rider lifecycle, race and reconciliation tests, read-only hosted payment queue | Owner-led handling on physical devices |
 | Owner | Store controls, branding and team access | Stored settings, checkout guard, logo, real Google owner/rider authorization and one-active-rider regression | Independent merchant owner and rider setup |
 | Rider | Assigned stops, state changes, COD and manual order | Local role and delivery fixtures, mobile viewport dashboard and real Google private COD delivery | Physical device workflow |
-| Rider | Geoapify road plans, caching and quota fallback | Local signed-in routing tests and earlier hosted provider check | Daily provider consumption under actual delivery operations |
+| Rider | Mapbox routes and quota fallback | Live Mapbox in isolated Android and iPhone browser emulation, plus route authorization and quota regressions | Protected production credentials, hosted smoke and physical-device navigation |
 | Operations | Maintenance, media publication, archive and restores | Cron and archive tests, encrypted merchant export and local recovery rehearsal | Scheduled run and over-capacity rollover |
 | Operations | Independent merchants | Two local release bundles, separate resources and empty business data | Fully provisioned second merchant |
 | Operations | Workload and endurance | Target passed locally. Original bounded hosted four-hour endurance passed. | Full hosted target and candidate terminal result |

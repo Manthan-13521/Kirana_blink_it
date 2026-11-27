@@ -9,31 +9,17 @@ registerHooks({resolve(specifier,context,next){
   if(context.parentURL?.includes('/worker/')&&specifier.startsWith('./')&&!specifier.endsWith('.ts'))return next(specifier+'.ts',context)
   return next(specifier,context)
 }})
-const { distinctDestinations,nearbyStops,optimizeMatrix,roadTimes,routeCredits }=await import('../worker/routing.ts')
+const { distinctDestinations,nearbyStops,optimizeMatrix }=await import('../worker/routing.ts')
+const {mapboxLimits,mapboxServices,matrixElements,tileAllowance}=await import('../worker/mapbox.ts')
 const { pushEndpoint,vapidHeader }=await import('../worker/push.ts')
 const { validWebhook }=await import('../worker/razorpay.ts')
 
 test('road ordering minimizes driving time and meters without requesting depot-return legs',async()=>{
-  const locations=[[78.41,17.41],[78.43,17.45],[78.46,17.44]]
-  const response=await roadTimes('fixture-token',locations,async(url,init)=>{
-    assert.equal(url,'https://api.geoapify.com/v1/routematrix')
-    assert.equal(init.headers['x-api-key'],'fixture-token')
-    assert.equal(init.redirect,'manual')
-    const data=JSON.parse(init.body)
-    assert.deepEqual(data.sources.map(x=>x.location),locations)
-    assert.deepEqual(data.targets.map(x=>x.location),locations.slice(1))
-    const times=[[12,3],[0,4],[2,0]]
-    const meters=[[900,700],[0,800],[300,0]]
-    return Response.json({sources_to_targets:times.map((row,i)=>row.map((time,j)=>({time,distance:meters[i][j],from_index:i,to_index:j})))})
-  })
-  assert.deepEqual(optimizeMatrix(response),{indices:[2,1],seconds:5,meters:1000})
   const leg=(seconds,meters)=>({seconds,meters})
   const zero=leg(0,0)
   assert.deepEqual(optimizeMatrix([[zero,leg(1,8),leg(1,2)],[zero,zero,leg(1,1)],[zero,leg(1,1),zero]]),
     {indices:[2,1],seconds:2,meters:3})
-  await assert.rejects(roadTimes('fake',locations,async()=>Response.json({sources_to_targets:[]})),/incomplete matrix/)
-  await assert.rejects(roadTimes('fake',locations,async()=>new Response(null,{status:429})),/unavailable/)
-  await assert.rejects(roadTimes('fake',locations,async()=>new Response(null,{status:302})),{code:'geoapify_http_302'})
+
 })
 
 test('nearby batches preserve the dispatch anchor and bill once per distinct destination',()=>{
@@ -48,7 +34,7 @@ test('nearby batches preserve the dispatch anchor and bill once per distinct des
   const unique=distinctDestinations(chosen)
   assert.deepEqual(unique[0].ids,['oldest','near-0'])
   assert.equal(unique.length,11)
-  assert.deepEqual([2,5,12].map(routeCredits),[6,30,130])
+  assert.deepEqual([2,5,12].map(matrixElements),[6,30,156])
 })
 
 test('push destination allowlist and signed VAPID assertion keep user data out of pushes',async()=>{
@@ -666,52 +652,157 @@ test('live webhooks record retries, late captures and refund lifecycle without m
 
 })
 
-test('authenticated route suggestions reuse cached road plans and preserve manual fallback below the quota cap',async t=>{
+test('legacy suggestions use the Mapbox directed matrix and enforce its quota',async t=>{
   const {Hono}=await import('hono')
-  const {routing,routingCreditCap}=await import('../worker/routing.ts')
+  const {routing}=await import('../worker/routing.ts')
   const {sqlite,db}=await integrationFixture(t)
-  const time=Math.floor(Date.now()/1000)
-  const ids=['11111111-1111-4111-8111-111111111111','22222222-2222-4222-8222-222222222222','33333333-3333-4333-8333-333333333333']
-  const coordinates=[[78.419,17.415],[78.419,17.415],[78.436,17.421]]
-  for(const [index,id] of ids.entries()){
-    seedPending(sqlite,id,time)
-    sqlite.prepare("UPDATE orders SET status='ready',assigned_to='demo-rider',fulfillment='delivery',route_rank=?,address_json=? WHERE id=?")
-      .run(index+1,JSON.stringify({longitude:coordinates[index][0],latitude:coordinates[index][1]}),id)
-  }
+  const ids=['suggest-a','suggest-b','suggest-c']
+  seedStops(sqlite,ids)
   const original=globalThis.fetch
   t.after(()=>{globalThis.fetch=original})
   let calls=0
-  globalThis.fetch=async (_url,{body})=>{
+  globalThis.fetch=async(input,options)=>{
     calls++
-    const points=JSON.parse(body)
-    assert.equal(points.sources.length,3)
-    assert.equal(points.targets.length,2)
-    return Response.json({sources_to_targets:[
-      [{time:91,distance:859},{time:512,distance:7344}],
-      [{time:0,distance:0},{time:436,distance:6243}],
-      [{time:241,distance:3397},{time:0,distance:0}],
-    ]})
+    const url=new URL(input)
+    assert.equal(url.origin,'https://api.mapbox.com')
+    assert.match(url.pathname,/^\/directions-matrix\/v1\/mapbox\/driving\//)
+    assert.equal(url.searchParams.get('destinations'),'1;2')
+    assert.equal(url.searchParams.get('access_token'),'pk.fixture.token')
+    assert.equal(options.redirect,'manual')
+    return Response.json(matrixFixture)
   }
   const app=new Hono()
   app.use('*',async(c,next)=>{c.set('account',{id:'demo-rider',role:'rider'});await next()})
-  app.onError((err,c)=>c.json({error:err.message},err.status??500))
+  app.onError((err,c)=>c.json({error:err.message,code:err.code},err.status??500))
   app.route('/',routing)
-  const request=(key='fixture-key')=>app.request('/rider/route/suggest',{method:'POST'},{DB:db,GEOAPIFY_KEY:key})
-  const first=await request()
+  const request=token=>app.request('/rider/route/suggest',{method:'POST'},{DB:db,MAPBOX_ROUTING_TOKEN:token})
+  const first=await request('pk.fixture.token')
   assert.equal(first.status,200)
-  assert.deepEqual(await first.json(),{ids,seconds:527,meters:7102,credits:6,provider:'Geoapify'})
-  sqlite.prepare('UPDATE orders SET route_rank=8 WHERE id=?').run(ids[0])
-  const cached=await request()
-  assert.equal(cached.status,200)
-  assert.deepEqual(await cached.json(),{ids:[ids[1],ids[0],ids[2]],seconds:527,meters:7102,credits:0,provider:'Geoapify'})
-  assert.equal(sqlite.prepare("SELECT used FROM service_budget WHERE service='routing'").get().used,6)
-  sqlite.prepare("UPDATE service_budget SET used=?,last_at=0 WHERE service='routing'").run(routingCreditCap)
-  sqlite.exec('UPDATE routing_cache SET expires_at=0')
-  const limited=await request()
-  assert.equal(limited.status,429)
-  assert.match((await limited.json()).error,/Arrange stops manually/)
+  assert.deepEqual(await first.json(),{ids,seconds:527,meters:7102,credits:6,provider:'Mapbox'})
+  assert.equal(sqlite.prepare('SELECT used FROM service_budget WHERE service=?').get(mapboxServices.matrix).used,6)
+  sqlite.prepare('UPDATE service_budget SET used=?,last_at=0 WHERE service=?').run(mapboxLimits.matrix,mapboxServices.matrix)
+  assert.equal((await request('pk.fixture.token')).status,429)
+  assert.equal((await request('')).status,503)
   assert.equal(calls,1)
-  const unconfigured=await request('')
-  assert.equal(unconfigured.status,503)
-  assert.match((await unconfigured.json()).error,/Arrange stops manually/)
+})
+
+const matrixFixture={code:'Ok',durations:[[91,512],[0,436],[241,0]],distances:[[859,7344],[0,6243],[3397,0]]}
+function seedStops(sqlite,ids){
+  const time=Math.floor(Date.now()/1000)
+  for(const [index,id] of ids.entries()){
+    seedPending(sqlite,id,time)
+    sqlite.prepare("UPDATE orders SET status='ready',assigned_to='demo-rider',fulfillment='delivery',route_rank=?,address_json=? WHERE id=?")
+      .run(index+1,JSON.stringify({longitude:index<2?78.419:78.436,latitude:index<2?17.415:17.421}),id)
+  }
+}
+test('rider navigation finds the exact fastest directed trip through eight stops',async()=>{
+  const {fastestTrip}=await import('../worker/navigation-model.ts')
+  const matrix=Array.from({length:9},(_,i)=>Array.from({length:9},(_,j)=>({
+    seconds:i===j?0:((i+15)*(j+19)*(i+1)+47*i+7*j)%97+3,
+    meters:((i+2)*(j+4)*17)%101+1,
+  })))
+  let fastest=Infinity
+  function verify(path,left,seconds){
+    if(!left.length){fastest=Math.min(fastest,seconds);return}
+    for(const next of left)verify(next,left.filter(i=>i!==next),seconds+matrix[path][next].seconds)
+  }
+  verify(0,[1,2,3,4,5,6,7,8],0)
+  const result=fastestTrip(matrix)
+  assert.equal(result.seconds,fastest)
+  assert.deepEqual([...result.indices].sort(),[1,2,3,4,5,6,7,8])
+})
+
+test('rider navigation authorizes assigned stops and reconstructs Mapbox legs and maneuver offsets',async t=>{
+  const {Hono}=await import('hono')
+  const {riderNavigation}=await import('../worker/rider-navigation.ts')
+  const {sqlite,db}=await integrationFixture(t)
+  const ids=['nav-stop-a','nav-stop-b','nav-stop-c']
+  seedStops(sqlite,ids)
+  let actor={id:'demo-rider',role:'rider'}
+  const old=globalThis.fetch,calls=[]
+  t.after(()=>{globalThis.fetch=old})
+  globalThis.fetch=async(input,options)=>{
+    const url=new URL(input)
+    assert.equal(url.origin,'https://api.mapbox.com')
+    assert.equal(url.searchParams.get('access_token'),'sk.fixture.routing')
+    assert.equal(options.redirect,'manual')
+    calls.push(url.pathname.split('/')[1])
+    if(calls.at(-1)==='directions-matrix')return Response.json(matrixFixture)
+    assert.equal(url.searchParams.get('steps'),'true')
+    assert.equal(url.searchParams.get('geometries'),'geojson')
+    const points=url.pathname.split('/').at(-1).split(';').map(pair=>pair.split(',').map(Number))
+    const step=(coordinates,instruction)=>({geometry:{type:'LineString',coordinates},maneuver:{instruction}})
+    return Response.json({code:'Ok',routes:[{ignored:'provider-field',legs:points.slice(1).map((point,index)=>{
+      const start=points[index],turn=[(start[0]+point[0])/2,(start[1]+point[1])/2]
+      return {duration:84.1,distance:1074.4,steps:[
+        step([start,turn],'Continue east.'),step([turn,point],'Turn left onto Main Road.'),step([point,point],'You have arrived.'),
+      ]}
+    })}]})
+  }
+  const app=new Hono()
+  app.use('*',async(c,next)=>{c.set('account',actor);await next()})
+  app.onError((err,c)=>c.json({error:err.message,code:err.code},err.status??500))
+  app.route('/',riderNavigation)
+  const post=body=>app.request('/rider/navigation',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(body)},{DB:db,MAPBOX_ROUTING_TOKEN:'sk.fixture.routing'})
+  const reply=await post({ids})
+  assert.equal(reply.status,200)
+  const route=await reply.json()
+  assert.equal(route.provider,'Mapbox')
+  assert.equal(route.legs.length,2)
+  assert.deepEqual(route.legs[0].steps.map(step=>step.at),[0,1,2])
+  assert.equal(route.legs[0].steps[1].text,'Turn left onto Main Road.')
+  assert.deepEqual(route.legs.flatMap(leg=>leg.ids),ids)
+  assert.ok(!JSON.stringify(route).includes('provider-field'))
+  assert.equal((await post({ids:[ids[0],ids[0]]})).status,400)
+  assert.equal((await post({ids:['not-assigned']})).status,403)
+  assert.equal((await post({ids,origin:{latitude:25,longitude:55}})).status,400)
+  actor={id:'demo-customer',role:'customer'}
+  assert.equal((await post({ids})).status,403)
+  actor={id:'demo-rider',role:'rider'}
+  sqlite.prepare('UPDATE service_budget SET used=?,last_at=0 WHERE service=?').run(mapboxLimits.directions,mapboxServices.directions)
+  assert.equal((await post({ids,manual:true})).status,429)
+  sqlite.prepare('UPDATE orders SET address_json=NULL WHERE id=?').run(ids[0])
+  assert.equal((await post({ids})).status,422)
+  assert.deepEqual(calls,['directions-matrix','directions'])
+})
+
+test('rider map sessions are authorized, read-only tokens are isolated and budget is reserved in batches',async t=>{
+  const {Hono}=await import('hono')
+  const {riderNavigation}=await import('../worker/rider-navigation.ts')
+  const {sqlite,db}=await integrationFixture(t)
+  const app=new Hono()
+  let actor={id:'demo-customer',role:'customer'}
+  app.use('*',async(c,next)=>{c.set('account',actor);await next()})
+  app.onError((err,c)=>c.json({error:err.message},err.status??500))
+  app.route('/',riderNavigation)
+  const admission=(token,routingToken='sk.fixture.routing')=>app.request('/rider/map-session',{method:'POST'},
+    {DB:db,MAPBOX_TILE_TOKEN:token,MAPBOX_ROUTING_TOKEN:routingToken,APP_MODE:'production'})
+  assert.equal((await admission('pk.fixture.tiles')).status,403)
+  actor={id:'demo-rider',role:'rider'}
+  assert.equal((await admission('sk.fixture.tiles')).status,503)
+  assert.equal((await admission('pk.fixture.tiles','pk.fixture.tiles')).status,503)
+  const granted=await admission('pk.fixture.tiles')
+  assert.equal(granted.status,200)
+  assert.deepEqual(await granted.json(),{token:'pk.fixture.tiles',tileAllowance})
+  assert.equal(sqlite.prepare('SELECT used FROM service_budget WHERE service=?').get(mapboxServices.tiles).used,tileAllowance)
+  assert.equal((await admission('pk.fixture.tiles')).status,429)
+  sqlite.prepare('UPDATE service_budget SET used=?,last_at=0 WHERE service=?').run(mapboxLimits.tiles,mapboxServices.tiles)
+  assert.equal((await admission('pk.fixture.tiles')).status,429)
+  assert.equal((await app.request('/rider/tiles/14/11760/7388',{}, {DB:db})).status,404)
+})
+
+test('Mapbox unreachable geometry and provider redirects fail safely without exposing credentials',async t=>{
+  const {mapboxDirections,mapboxMatrix}=await import('../worker/mapbox.ts')
+  const {sqlite,db}=await integrationFixture(t)
+  const original=globalThis.fetch
+  t.after(()=>{globalThis.fetch=original})
+  const points=[[78.42,17.41],[78.43,17.42]]
+  globalThis.fetch=async()=>Response.json({code:'Ok',durations:[[null],[0]],distances:[[null],[0]]})
+  await assert.rejects(mapboxMatrix(db,'pk.fixture.token',points),{code:'mapbox_unreachable'})
+  globalThis.fetch=async()=>new Response(null,{status:302,headers:{Location:'https://example.invalid/'}})
+  await assert.rejects(mapboxDirections(db,'sk.fixture.token',points),{code:'mapbox_http_302'})
+  sqlite.prepare('UPDATE service_budget SET last_at=0 WHERE service=?').run(mapboxServices.directions)
+  globalThis.fetch=async()=>Response.json({code:'NoSegment'})
+  await assert.rejects(mapboxDirections(db,'sk.fixture.token',points),error=>error.status===422)
 })

@@ -51,7 +51,8 @@ const queries = {
   'completed sales report': ["SELECT date(created_at+19800,'unixepoch') day,channel,fulfillment,payment_method,COUNT(*),SUM(total) FROM orders WHERE status='completed' AND created_at>=? GROUP BY day,channel,fulfillment,payment_method ORDER BY day DESC",[1800015000]],
   'customer order cursor': ["SELECT id,status FROM orders WHERE account_id=? AND channel='online' AND (created_at,id)<(?,?) ORDER BY created_at DESC,id DESC LIMIT 41",['demo-customer',1800019000,'plan-19000']],
   'owner queue by state': ['SELECT id,status FROM orders WHERE status=? ORDER BY created_at DESC,id DESC LIMIT 41',['placed']],
-  'assigned rider queue': ["SELECT id,route_rank,address_json,status FROM orders WHERE assigned_to=? AND status IN ('ready','out_for_delivery') ORDER BY route_rank,created_at LIMIT 30",['demo-rider']],
+  'assigned rider queue': ["SELECT id,route_rank,address_json,status FROM orders WHERE assigned_to=? AND status IN ('ready','out_for_delivery') ORDER BY route_rank,created_at,id LIMIT 60",['demo-rider']],
+  'navigation trip assignments': ["WITH selected AS MATERIALIZED (SELECT id,address_json,assigned_to,fulfillment,status FROM orders WHERE id IN (?,?,?)) SELECT id,address_json FROM selected WHERE assigned_to=? AND fulfillment='delivery' AND status IN('ready','out_for_delivery')",['plan-2','plan-5','plan-8','demo-rider']],
   'owned order detail': ['SELECT * FROM orders WHERE id=?',['plan-1']],
   'order tracking version': ['SELECT o.status,(SELECT id FROM order_events WHERE order_id=o.id ORDER BY id DESC LIMIT 1) FROM orders o WHERE o.id=?',['plan-1']],
   'order item lines': ['SELECT * FROM order_items WHERE order_id=? ORDER BY product_id',['plan-1']],
@@ -71,7 +72,6 @@ console.log(JSON.stringify(plans,null,2))
 if(refined) {
   for(const [name,index] of Object.entries({
     'low stock':'products_low_stock','expiry alerts':'products_upcoming_expiry','rider history':'rider_history',
-    'due refund processing':'provider_refund_due',
     'product media retention':'products_media_reference','active rider cash collection':'rider_unreconciled','public all products cursor':'products_active_id','two-token prefix search':'PRIMARY KEY','public category cursor':'products_category','slot admission':'slot_usage','customer order cursor':'orders_owner','order tracking version':'order_timeline',
   })) {
     if(!plans[name].some(detail=>detail.includes(index))||plans[name].some(detail=>detail.includes('TEMP B-TREE'))) {

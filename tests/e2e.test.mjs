@@ -142,8 +142,15 @@ test('customer tracking secures order snapshots and refreshes at each committed 
   assert.equal(current.status,'ready')
   assert.equal(current.payment_status,'cash_due')
   assert.ok(current.events.every(event=>event.created_at>0))
-  assert.ok((await rider('/api/rider/route')).orders.some(order=>order.id===id))
+  const dispatched=await rider('/api/rider/route')
+  const riderVersion=version=>'/api/rider/route?v='+encodeURIComponent(version)
+  assert.ok(dispatched.orders.some(order=>order.id===id))
+  assert.deepEqual(await rider(riderVersion(dispatched.version)),{unchanged:true})
+  await customer(riderVersion(dispatched.version),{expected:403})
   await state(rider,id,'out_for_delivery')
+  const routed=await rider(riderVersion(dispatched.version))
+  assert.equal(routed.orders.find(order=>order.id===id).status,'out_for_delivery')
+  assert.notEqual(dispatched.version,routed.version)
   await state(owner,id,'completed',{},409)
   const updates=await Promise.allSettled([
     state(rider,id,'completed',{cash:placed.total}),
