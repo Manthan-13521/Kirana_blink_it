@@ -1,0 +1,210 @@
+{
+  "status": "complete",
+  "start": "2026-11-27T05:52:43.475Z",
+  "end": "2026-11-27T09:52:48.963Z",
+  "elapsedSeconds": 14405,
+  "phase": "verification",
+  "metered": {
+    "requests": 6919,
+    "reads": 132910,
+    "writes": 14050,
+    "statements": 14401,
+    "maxStatements": 13,
+    "unexpected": 0
+  },
+  "completed": {
+    "online": 172,
+    "counter": 60,
+    "delivery": 15,
+    "simulatedOnlinePayments": 58,
+    "expectedFailures": 21
+  },
+  "latestCloudflare": {
+    "utcDay": "2026-11-27",
+    "asOf": "2026-11-27T09:52:47.045Z",
+    "sampling": "Cloudflare analytics may lag or be sampled.",
+    "d1RowsRead": {
+      "value": 183421,
+      "limit": 5000000,
+      "warning": false
+    },
+    "d1RowsWritten": {
+      "value": 46003,
+      "limit": 100000,
+      "warning": false
+    },
+    "workerRequests": {
+      "value": 8160,
+      "limit": 100000,
+      "warning": false
+    },
+    "worker": {
+      "name": "kirana-benchmark-staging-api",
+      "requests": 7566,
+      "errors": 0,
+      "cpuP50Us": 2118,
+      "cpuP99Us": 6165
+    }
+  },
+  "startingCloudflare": {
+    "utcDay": "2026-11-27",
+    "asOf": "2026-11-27T05:52:37.190Z",
+    "sampling": "Cloudflare analytics may lag or be sampled.",
+    "d1RowsRead": {
+      "value": 35141,
+      "limit": 5000000,
+      "warning": false
+    },
+    "d1RowsWritten": {
+      "value": 31257,
+      "limit": 100000,
+      "warning": false
+    },
+    "workerRequests": {
+      "value": 208,
+      "limit": 100000,
+      "warning": false
+    }
+  },
+  "latency": {
+    "count": 6919,
+    "p50Ms": 230,
+    "p95Ms": 728,
+    "p99Ms": 971
+  },
+  "endpointLatency": {
+    "GET /health": {
+      "count": 6,
+      "p50Ms": 41,
+      "p95Ms": 174,
+      "p99Ms": 174
+    },
+    "GET /__benchmark/integrity": {
+      "count": 2,
+      "p50Ms": 208,
+      "p95Ms": 211,
+      "p99Ms": 211
+    },
+    "POST /auth/demo": {
+      "count": 2,
+      "p50Ms": 260,
+      "p95Ms": 303,
+      "p99Ms": 303
+    },
+    "POST /auth/register-local": {
+      "count": 8,
+      "p50Ms": 255,
+      "p95Ms": 282,
+      "p99Ms": 282
+    },
+    "POST /addresses": {
+      "count": 8,
+      "p50Ms": 261,
+      "p95Ms": 273,
+      "p99Ms": 273
+    },
+    "GET /catalog": {
+      "count": 3424,
+      "p50Ms": 241,
+      "p95Ms": 754,
+      "p99Ms": 1001
+    },
+    "GET /catalog/:sku": {
+      "count": 1712,
+      "p50Ms": 193,
+      "p95Ms": 697,
+      "p99Ms": 975
+    },
+    "GET /slots": {
+      "count": 178,
+      "p50Ms": 172,
+      "p95Ms": 206,
+      "p99Ms": 257
+    },
+    "POST /quote": {
+      "count": 243,
+      "p50Ms": 305,
+      "p95Ms": 406,
+      "p99Ms": 489
+    },
+    "POST /orders": {
+      "count": 223,
+      "p50Ms": 397,
+      "p95Ms": 512,
+      "p99Ms": 534
+    },
+    "POST /orders/:id/test-payment": {
+      "count": 128,
+      "p50Ms": 209,
+      "p95Ms": 320,
+      "p99Ms": 356
+    },
+    "POST /orders/:id/state": {
+      "count": 703,
+      "p50Ms": 245,
+      "p95Ms": 343,
+      "p99Ms": 367
+    },
+    "POST /orders/:id/assign": {
+      "count": 15,
+      "p50Ms": 322,
+      "p95Ms": 388,
+      "p99Ms": 388
+    },
+    "POST /pos": {
+      "count": 60,
+      "p50Ms": 387,
+      "p95Ms": 443,
+      "p99Ms": 556
+    },
+    "GET /me": {
+      "count": 62,
+      "p50Ms": 107,
+      "p95Ms": 158,
+      "p99Ms": 193
+    },
+    "GET /admin/summary": {
+      "count": 62,
+      "p50Ms": 189,
+      "p95Ms": 226,
+      "p99Ms": 261
+    },
+    "GET /rider/route": {
+      "count": 62,
+      "p50Ms": 241,
+      "p95Ms": 270,
+      "p99Ms": 353
+    },
+    "POST /orders/:id/reconcile": {
+      "count": 10,
+      "p50Ms": 230,
+      "p95Ms": 301,
+      "p99Ms": 301
+    },
+    "GET /orders/:id": {
+      "count": 6,
+      "p50Ms": 286,
+      "p95Ms": 398,
+      "p99Ms": 398
+    },
+    "GET /admin/settings": {
+      "count": 5,
+      "p50Ms": 37,
+      "p95Ms": 62,
+      "p99Ms": 62
+    }
+  },
+  "peakWidth": 100,
+  "finalIntegrity": {
+    "skus": 5000,
+    "minStock": 180,
+    "online": 235,
+    "counter": 84,
+    "pending": 0,
+    "paymentMismatch": 0,
+    "badTotals": 0,
+    "duplicateCompletions": 0,
+    "sizeBytes": 6582272
+  },
+  "stopReason": null
+}

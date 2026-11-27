@@ -63,6 +63,15 @@ try {
       await button(rider, 'Continue as demo rider').click()
       await rider.getByRole('heading', { name: 'Your delivery run' }).waitFor()
       assert.equal(await rider.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true)
+      if (name === 'desktop') {
+        await page.goto(local.base + '/owner')
+        await button(page, 'Sign in as owner').click()
+        await button(page, 'Continue as demo owner').click()
+        await button(page, 'Catalog & stock').waitFor()
+        await rider.getByRole('button', { name: 'Refresh assignments' }).click()
+        await rider.getByRole('alert').getByText('This account cannot perform that action.').waitFor()
+        assert.equal(await rider.getByRole('table').count(), 0)
+      }
       assert.deepEqual(errors, [])
       report(name, 'local browser emulation', { result: 'pass', checks: 10 })
       await context.close()

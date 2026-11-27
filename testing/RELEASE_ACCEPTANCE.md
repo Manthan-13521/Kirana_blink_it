@@ -1,6 +1,22 @@
 # Commercial release acceptance
 
-**Verdict FAIL for commercial launch.** Required hosted capacity, authentic payment delivery, real rider fulfillment and live rollover acceptance remain open. Public checkout, live payment initiation and live refunds are disabled.
+**Verdict FAIL for commercial launch.** Hosted target capacity and latency, post-rotation Razorpay replay, and production rollover remain open. Public checkout, live payment initiation and live refunds are disabled.
+
+## 27 November follow-up
+
+| Gate | Result | Evidence |
+| --- | --- | --- |
+| Complete the original four-hour endurance run | PASS | 11:22:43 to 15:22:48 IST, 6,919 requests, 172 online orders, 60 counter sales, zero unexpected errors, peak 100 clients. No quota stop. |
+| Hosted latency and target workload | FAIL | Endurance p50/p95/p99 were 230/728/971 ms. Catalog p95 was 754 ms. Endurance used 132,910 D1 reads and 14,050 writes. Sampled Worker CPU p50/p99 were 2.12/6.17 ms. Full 5,000-SKU, 800 online and 300 counter test awaits an eligible UTC quota window. |
+| Endurance integrity | PASS | 5,000 SKUs, minimum stock 180, zero pending payments, unexplained totals, payment mismatches or duplicate completion events. |
+| Existing authentic Razorpay delivery | PASS | Provider history confirmed HTTP 200 for `payment.captured` and `order.paid` at 11:07:28 IST. D1 recorded one matched-time Live capture. |
+| Current secret alignment and provider replay | FAIL | The old saved secret produced HTTP 403 on the local diagnostic. The successful provider attempts establish the earlier delivery, while a fresh post-rotation event and provider replay still need verification. |
+| Private rider workflow | PASS | Three real Google sign-ins, private COD order, owner assignment, rider completion, shopper tracking and cash reconciliation. One deduction and zero provider charges. Temporary private checkout access was revoked. |
+| Unattended backup and restoration | PASS | The launchd job completed a merchant backup in the private Application Support directory. Both stores restored with valid integrity and foreign keys. Daily schedule installed. |
+| Hosted rollover rehearsal | PASS | Two isolated synthetic D1 databases. Candidate matched source order history, invoices, payment identifiers and inventory, with an original recovery bookmark. |
+| Live rollover, physical-device and independent merchant acceptance | FAIL | Live retention and cutover, a physical phone workflow and independent provider accounts remain open. |
+
+The [final endurance report](evidence/endurance-2026-11-27-final.json) records full endpoint timings and the validated terminal checks. The earlier summary below documents the release state before this follow-up.
 
 ## Verified
 
@@ -18,7 +34,7 @@
 
 The Pages rollback point for the follow-up is `566b7fe1`. In the `blink-it` Pages project, open **Deployments**, choose that entry's actions menu and select **Rollback to this deployment**. Confirm the immediately preceding merchant Worker version in **Deployments** before API rollback, since the rider secret was added between application releases. The follow-up added no schema migration, so application rollback keeps both D1 databases in place. Check Pages service binding, checkout flags, Google and rider access, and merchant totals after rollback. [Pages rollback](https://developers.cloudflare.com/pages/configuration/rollbacks/) · [Worker rollback](https://developers.cloudflare.com/workers/versions-and-deployments/rollbacks/)
 
-## Open acceptance gates
+## Earlier acceptance snapshot
 
 - The bounded hosted endurance run began at 11:22:43 IST on 27 November 2026. At the 12:04:14 IST checkpoint it had 931 requests, zero unexpected errors, 27 completed online orders, 9 counter sales, 16,154 D1 reads and 2,194 D1 writes. It continued without a quota stop at that checkpoint. Completion is expected around 15:22:43 IST if the runner and quota remain available. Final timing, latency and database invariants require its terminal record.
 - The full 5,000-SKU hosted 800 online plus 300 counter run has a separate quota gate. The next UTC quota window starts at 05:30 IST on 28 November. Confirm actual headroom before starting it.

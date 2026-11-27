@@ -112,8 +112,8 @@ orders.get('/slots',async c=>{
   if(!config.enable_cod&&!localhost(c)&&!checkoutCredentials(c.env))return c.json([])
   return c.json(await slots(c.env.DB,config,key))
 })
-orders.get('/orders',async c=>{
-  const account=role(c,'customer','owner','staff','rider')
+async function orderHistory(c:Ctx,riderOnly=false){
+  const account=riderOnly?role(c,'rider'):role(c,'customer','owner','staff','rider')
   const db=c.env.DB
   const where:string[]=[], params:unknown[]=[]
   if(account.role==='customer') { where.push("account_id=? AND channel='online'");params.push(account.id) }
@@ -134,7 +134,9 @@ orders.get('/orders',async c=>{
     FROM orders ${whereSql} ORDER BY ${orderBy} LIMIT 41`,...params)
   const last=results[39]
   return c.json({orders:results.slice(0,40),next:results.length>40?`${last.created_at}.${last.id}`:null})
-})
+}
+orders.get('/orders',c=>orderHistory(c))
+orders.get('/rider/orders',c=>orderHistory(c,true))
 orders.get('/orders/:id',async c=>{
   const account=role(c,'customer','owner','staff','rider'), db=c.env.DB
   const orderId=c.req.param('id'), previousVersion=account.role==='customer'?c.req.query('tracking'):undefined

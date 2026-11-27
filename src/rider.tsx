@@ -17,7 +17,7 @@ export function RiderDashboard({account,shop}:{account:Account;shop:Shop}){
   const load=async()=>{
     setError('')
     try{
-      const [active,history]=await Promise.all([api<NonNullable<typeof route>>('/rider/route'),api<{orders:OrderRow[];next:string|null}>('/orders')])
+      const [active,history]=await Promise.all([api<NonNullable<typeof route>>('/rider/route'),api<{orders:OrderRow[];next:string|null}>('/rider/orders')])
       setRoute(active);setRows(history.orders);setCursor(history.next);setSuggestion(null)
     }
     catch(e){setError(message(e))}
@@ -62,7 +62,7 @@ export function RiderDashboard({account,shop}:{account:Account;shop:Shop}){
     if(!cursor)return
     setLoadingHistory(true);setError('')
     try{
-      const nextPage=await api<{orders:OrderRow[];next:string|null}>('/orders?before='+encodeURIComponent(cursor))
+      const nextPage=await api<{orders:OrderRow[];next:string|null}>('/rider/orders?before='+encodeURIComponent(cursor))
       setRows(prev=>[...prev,...nextPage.orders.filter(row=>!prev.some(entry=>entry.id===row.id))])
       setCursor(nextPage.next)
     }catch(e){setError(message(e))}finally{setLoadingHistory(false)}
