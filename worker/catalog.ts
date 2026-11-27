@@ -1,31 +1,42 @@
 import { Hono } from 'hono'
 import { jpegMime,mediaFileId,validMedia,webpMime } from './media-format'
-import { all,audit,I,id,json,now,obj,one,Problem,role,S,statement } from './shared'
+import { all,audit,digest,I,id,json,now,obj,one,Problem,role,S,statement } from './shared'
 import type { Ctx, Env, Product } from './shared'
 
 export const catalog=new Hono<Env>()
 const terms=(value:string)=>[...new Set(value.toLowerCase().normalize('NFKC').match(/[\p{L}\p{N}]+/gu)||[])]
 const publicFields='id,sku,name,brand,description,category,subcategory,unit,step,price,mrp,stock,min_steps,max_steps,image,featured,variant_group'
-async function searchCatalog(db:D1Database,words:string[],cursor:string){
-  const aliases=await all<{term:string;canonical:string}>(db,`SELECT term,canonical FROM synonyms WHERE term IN (${words.map(()=>'?').join(',')})`,...words)
-  const canonical=new Map(aliases.map(row=>[row.term,row.canonical]))
-  // Prefer a pack or SKU token, otherwise start from the longest word.
-  const [anchor,...additional]=words.map(word=>canonical.get(word)??word).sort((a,b)=>Number(/\d/.test(b))-Number(/\d/.test(a))||b.length-a.length)
-  const prefix=(word:string)=>Array.from(word).slice(0,12).join('')
-  const filters=['match.prefix=? AND match.product_id>?']
-  const params=[prefix(anchor),cursor]
-  for(const word of additional){
-    if(word!==prefix(word))continue
-    filters.push('EXISTS (SELECT 1 FROM search_prefixes extra WHERE extra.product_id=products.id AND extra.prefix=?)')
-    params.push(word)
-  }
-  for(const word of [anchor,...additional].filter(word=>word!==prefix(word))){
-    filters.push('EXISTS (SELECT 1 FROM search_terms term WHERE term.product_id=products.id AND instr(term.term,?)=1)')
-    params.push(word)
-  }
-  return {source:'search_prefixes AS match CROSS JOIN products ON products.id=match.product_id',filters,params}
+function searchCatalog(words:string[],cursor:string){
+  // Resolve aliases and pick the most selective input in the same D1 call as the page.
+  const withWords=`WITH words AS MATERIALIZED (
+    SELECT input.key AS pos,COALESCE(s.canonical,input.value) AS word
+    FROM json_each(?) AS input LEFT JOIN synonyms s ON s.term=input.value
+  ), anchor AS MATERIALIZED (
+    SELECT pos,substr(word,1,12) AS prefix FROM words
+    ORDER BY (word GLOB '*[0-9]*') DESC,length(word) DESC,pos LIMIT 1
+  )`
+  const filters=[`match.prefix=(SELECT prefix FROM anchor) AND match.product_id>?
+    AND NOT EXISTS (
+      SELECT 1 FROM words w WHERE CASE WHEN length(w.word)>12 THEN
+        NOT EXISTS (SELECT 1 FROM search_terms t WHERE t.product_id=match.product_id AND instr(t.term,w.word)=1)
+      WHEN w.pos<>(SELECT pos FROM anchor) THEN
+        NOT EXISTS (SELECT 1 FROM search_prefixes p WHERE p.product_id=match.product_id AND p.prefix=w.word)
+      ELSE 0 END
+    )`]
+  return {withWords,source:'search_prefixes AS match CROSS JOIN products ON products.id=match.product_id',
+    filters,params:[JSON.stringify(words),cursor] as const}
 }
-catalog.get('/categories',async c=>c.json(await all(c.env.DB,'SELECT id,label,image FROM categories ORDER BY sort,id')))
+
+async function publicCatalogResponse(c:Ctx,value:unknown){
+  const body=JSON.stringify(value)
+  // Revalidate against current D1 results, including stock, price and item expiry.
+  const etag='"'+await digest(body)+'"'
+  c.header('Cache-Control','public, no-cache')
+  c.header('ETag',etag)
+  if(c.req.header('If-None-Match')?.split(',').some(tag=>tag.trim().replace(/^W\//,'')===etag))return c.body(null,304)
+  return c.body(body,200,{'Content-Type':'application/json; charset=UTF-8'})
+}
+catalog.get('/categories',async c=>publicCatalogResponse(c,await all(c.env.DB,'SELECT id,label,image FROM categories ORDER BY sort,id')))
 catalog.get('/catalog',async c=>{
   const db=c.env.DB
   const search=S(c.req.query('q')??'','search',100,false), category=c.req.query('category'), subcategory=c.req.query('subcategory')
@@ -40,29 +51,38 @@ catalog.get('/catalog',async c=>{
   if(featured) filters.push('featured=1')
 
   let source='products INDEXED BY '+(category&&subcategory?'products_category_subcategory':category?'products_category':subcategory?'products_subcategory':featured?'products_featured':'products_active_id')
-  let sort='id'
+  let sort='id',withWords=''
   if(words.length){
-    const search=await searchCatalog(db,words,cursor)
-    source=search.source
+    const search=searchCatalog(words,cursor)
+    source=search.source;withWords=search.withWords
     sort='match.product_id'
     filters.push(...search.filters)
-    params.push(...search.params)
+    const [input,after]=search.params
+    params.unshift(input)
+    params.push(after)
   } else {
     filters.push('id>?');params.push(cursor)
   }
-  const products=await all<Product>(db,`SELECT ${publicFields} FROM ${source} WHERE ${filters.join(' AND ')} ORDER BY ${sort} LIMIT ?`,...params,amount+1)
-  return c.json({products:products.slice(0,amount),next:products.length>amount?products[amount-1].id:null})
+  const products=await all<Product>(db,`${withWords} SELECT ${publicFields} FROM ${source} WHERE ${filters.join(' AND ')} ORDER BY ${sort} LIMIT ?`,...params,amount+1)
+  return publicCatalogResponse(c,{products:products.slice(0,amount),next:products.length>amount?products[amount-1].id:null})
 })
 catalog.get('/catalog/:id',async c=>{
-  const db=c.env.DB, product=await one<Product>(db,`SELECT ${publicFields} FROM products WHERE id=? AND active=1 AND (expiry IS NULL OR expiry>=date('now','+330 minutes'))`,c.req.param('id'))
-  if(!product) throw new Problem(404,'Product not found.')
+  const db=c.env.DB,productId=c.req.param('id')
+  const eligible="active=1 AND (expiry IS NULL OR expiry>=date('now','+330 minutes'))"
+  const lookup=`SELECT ${publicFields} FROM products WHERE id=? AND ${eligible}`
   if(c.req.query('variants')==='1'){
-    const variants=product.variant_group?await all<Product>(db,`SELECT ${publicFields} FROM products
-      WHERE variant_group=? AND variant_group<>'' AND active=1 AND (expiry IS NULL OR expiry>=date('now','+330 minutes'))
-      ORDER BY step,id LIMIT 24`,product.variant_group):[]
-    return c.json({product,variants})
+    const [row,variants]=await db.batch<Product>([
+      statement(db,lookup,productId),
+      statement(db,`SELECT ${publicFields} FROM products WHERE variant_group<>'' AND ${eligible}
+        AND variant_group=(SELECT variant_group FROM products WHERE id=? AND ${eligible}) ORDER BY step,id LIMIT 24`,productId),
+    ])
+    const [product]=row.results
+    if(!product)throw new Problem(404,'Product not found.')
+    return publicCatalogResponse(c,{product,variants:variants.results})
   }
-  return c.json(product)
+  const product=await one<Product>(db,lookup,productId)
+  if(!product)throw new Problem(404,'Product not found.')
+  return publicCatalogResponse(c,product)
 })
 catalog.get('/admin/products',async c=>{
   role(c,'owner','staff')
@@ -74,9 +94,9 @@ catalog.get('/admin/products',async c=>{
   const stockFilter=stock==='out'?' AND products.active=1 AND products.stock=0'
     :stock==='low'?' AND products.active=1 AND products.stock>0 AND products.stock<=products.threshold':''
   const words=terms(q).slice(0,5)
-  const search=words.length?await searchCatalog(db,words,after):null
+  const search=words.length?searchCatalog(words,after):null
   const data=search
-    ?await all<Product>(db,`SELECT products.* FROM ${search.source} WHERE ${search.filters.join(' AND ')}${stockFilter} ORDER BY match.product_id LIMIT 81`,...search.params)
+    ?await all<Product>(db,`${search.withWords} SELECT products.* FROM ${search.source} WHERE ${search.filters.join(' AND ')}${stockFilter} ORDER BY match.product_id LIMIT 81`,...search.params)
     :await all<Product>(db,'SELECT * FROM products WHERE id>?'+stockFilter+' ORDER BY id LIMIT 81',after)
   return c.json({products:data.slice(0,80),next:data.length>80?data[79].id:null})
 })

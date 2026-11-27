@@ -369,6 +369,36 @@ test('indexed search paginates broad terms and removes old prefixes on product e
   assert.ok(products.size>1)
 })
 
+test('public catalog validators recheck stock, price and availability immediately',async()=>{
+  const product={sku:'FRESH-VALIDATOR',name:'Validator fixture',category:'fresh',unit:'pc',step:1,price:4000,stock:4}
+  const {id}=await action(owner,'/admin/products',product,201)
+  const detail='/api/catalog/'+id,search='/api/catalog?q=fresh+validator'
+  const read=(path,tag)=>fetch(instance.base+path,{headers:tag?{'If-None-Match':tag}:{}})
+  const [initial,list]=await Promise.all([read(detail),read(search)])
+  assert.equal(initial.headers.get('cache-control'),'public, no-cache')
+  assert.equal((await initial.json()).stock,4)
+  assert.equal((await list.json()).products[0].price,4000)
+  const tag=initial.headers.get('etag'),listTag=list.headers.get('etag')
+  assert.ok(tag&&listTag)
+  assert.equal((await read(detail,'W/'+tag)).status,304)
+  assert.equal((await read(search,listTag)).status,304)
+  await action(owner,'/admin/products/'+id+'/stock',{quantity:-2,reason:'adjustment'})
+  const stock=await read(detail,tag)
+  assert.equal(stock.status,200)
+  assert.equal((await stock.json()).stock,2)
+  await action(owner,'/admin/products/'+id,{...product,price:4200},200,'PUT')
+  const changed=await read(search,listTag)
+  assert.equal(changed.status,200)
+  assert.equal((await changed.json()).products[0].price,4200)
+  await action(owner,'/admin/products/'+id,{...product,active:0},200,'PUT')
+  const hidden=await read(detail,tag)
+  assert.equal(hidden.status,404)
+  assert.equal(hidden.headers.get('cache-control'),'no-store')
+  const privateResponse=await fetch(instance.base+'/api/orders')
+  assert.equal(privateResponse.headers.get('etag'),null)
+  assert.equal(privateResponse.headers.get('cache-control'),'no-store')
+})
+
 test('overlapping refund requests cannot exceed captured cash',async()=>{
   const request={fulfillment:'pickup',method:'cash',slot:await available('pickup'),items:[item('milk')]}
   const {id}=await place(customer,request)
